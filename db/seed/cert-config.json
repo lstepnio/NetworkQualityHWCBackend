@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "configVersion": "2026-05-06.1",
+  "servers": [
+    { "id": "mia",  "name": "Miami",            "host": "speedtestmia.gethotwired.com",  "port": 8080, "secure": true, "weight": 1.0 },
+    { "id": "apf",  "name": "Apopka",           "host": "speedtestapf.gethotwired.com",  "port": 8080, "secure": true, "weight": 1.0 },
+    { "id": "atl",  "name": "Atlanta",          "host": "speedtestatl.gethotwired.com",  "port": 8080, "secure": true, "weight": 1.0 },
+    { "id": "boca", "name": "Boca Raton",       "host": "speedtestboca.gethotwired.com", "port": 8080, "secure": true, "weight": 1.0 },
+    { "id": "dfw",  "name": "Dallas/Fort Worth","host": "speedtestdfw.gethotwired.com",  "port": 8080, "secure": true, "weight": 1.0 },
+    { "id": "la",   "name": "Los Angeles",      "host": "speedtestla.gethotwired.com",   "port": 8080, "secure": true, "weight": 1.0 },
+    { "id": "nc",   "name": "North Carolina",   "host": "speedtestnc.gethotwired.com",   "port": 8080, "secure": true, "weight": 1.0 }
+  ],
+  "tests": {
+    "download": { "durationSec": 10, "parallel": 4, "perRequestBytes": 100000000, "warmupFraction": 0.33 },
+    "upload":   { "durationSec": 5,  "parallel": 2, "perRequestBytes": 50000000,  "warmupFraction": 0.33 },
+    "latency":  { "samples": 10, "timeoutMs": 2000 },
+    "playback": {
+      "manifestUrl": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd",
+      "durationSec": 20
+    }
+  },
+  "tiers": [
+    { "id": "sd",      "displayName": "SD",      "minDownloadMbps": 5,  "minUploadMbps": 1, "maxLatencyMs": 200, "maxJitterMs": 50, "minPlaybackHeight": 480,  "minPlaybackBitrateKbps": 1500 },
+    { "id": "hd",      "displayName": "HD",      "minDownloadMbps": 12, "minUploadMbps": 3, "maxLatencyMs": 120, "maxJitterMs": 30, "minPlaybackHeight": 1080, "minPlaybackBitrateKbps": 4000 },
+    { "id": "uhd",     "displayName": "4K",      "minDownloadMbps": 40, "minUploadMbps": 5, "maxLatencyMs": 80,  "maxJitterMs": 20, "minPlaybackHeight": 2160, "minPlaybackBitrateKbps": 16000 },
+    { "id": "uhd_hdr", "displayName": "4K HDR",  "minDownloadMbps": 55, "minUploadMbps": 5, "maxLatencyMs": 50,  "maxJitterMs": 15, "minPlaybackHeight": 2160, "minPlaybackBitrateKbps": 25000, "requiresHdr": true }
+  ],
+  "uploadResults": { "enabled": false, "endpoint": null }
+}

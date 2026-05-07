@@ -1,0 +1,4 @@
+[submodule "contract"]
+	path = contract
+	url = https://github.com/lstepnio/fisiontv-cert-contract.git
+	branch = main
