@@ -346,6 +346,34 @@ func TestPostCertification_NonBearerAuth_Rejected(t *testing.T) {
 	}
 }
 
+// Regression: POST with a configVersion the server has never seen still
+// succeeds. Prior to migration 0002 the FK on certifications.config_version
+// rejected anything not already in cert_config, so a fresh-from-bundled
+// client (configVersion = "local-defaults") would 500 forever.
+func TestPostCertification_UnknownConfigVersion(t *testing.T) {
+	env, cleanup := newCertEnv(t)
+	defer cleanup()
+
+	fix := loadCertFixture(t)
+	fix["configVersion"] = "never-seeded-by-server"
+	fix["certificationId"] = "770e8400-e29b-41d4-a716-446655440000"
+
+	resp := env.post(mustMarshal(t, fix), nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		got, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d (%s), want 201", resp.StatusCode, string(got))
+	}
+
+	cert, err := env.certs.Get(context.Background(), "770e8400-e29b-41d4-a716-446655440000")
+	if err != nil {
+		t.Fatalf("expected stored row: %v", err)
+	}
+	if cert.ConfigVersion == nil || *cert.ConfigVersion != "never-seeded-by-server" {
+		t.Errorf("config_version: got %v, want never-seeded-by-server", cert.ConfigVersion)
+	}
+}
+
 // Validation error on missing required field → 400 with details.
 func TestPostCertification_MissingCertID(t *testing.T) {
 	env, cleanup := newCertEnv(t)
