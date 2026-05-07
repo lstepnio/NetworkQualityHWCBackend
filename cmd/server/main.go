@@ -57,6 +57,7 @@ func main() {
 		CertConfigs:    cfgStore,
 		Certifications: certStore,
 		PII:            hasher,
+		AdminToken:     env.AdminToken,
 	})
 
 	srv := &http.Server{

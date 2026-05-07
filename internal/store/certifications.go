@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -112,6 +113,114 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 		return UpsertDuplicate, nil
 	}
 	return UpsertConflict, nil
+}
+
+// ListFilter narrows /admin/certifications results. Zero values are ignored.
+// Limit is capped to 200 server-side; Offset is unbounded.
+type ListFilter struct {
+	Tier          string
+	DeviceID      string
+	ConfigVersion string
+	From          *time.Time
+	To            *time.Time
+	Limit         int
+	Offset        int
+}
+
+// ListSummary is the row shape returned by List — hot-path columns only,
+// not the full JSONB payload. Use Get for the payload.
+type ListSummary struct {
+	CertificationID    string
+	DeviceID           string
+	HSN                *string
+	ConfigVersion      *string
+	StartedAt          time.Time
+	CompletedAt        time.Time
+	AchievedTier       string
+	MarginalMetric     *string
+	Transport          string
+	WidevineLevel      *string
+	HDRTypes           []string
+	DisplayMaxHeight   *int
+	ThermalStatus      *string
+	DownloadSteadyMbps *float64
+	UploadSteadyMbps   *float64
+	LatencyMedianMs    *int
+	ReceivedAt         time.Time
+}
+
+func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSummary, int, error) {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+
+	conds := []string{"1=1"}
+	args := []any{}
+	add := func(clause string, val any) {
+		args = append(args, val)
+		conds = append(conds, fmt.Sprintf(clause, len(args)))
+	}
+	if f.Tier != "" {
+		add("achieved_tier = $%d", f.Tier)
+	}
+	if f.DeviceID != "" {
+		add("device_id = $%d", f.DeviceID)
+	}
+	if f.ConfigVersion != "" {
+		add("config_version = $%d", f.ConfigVersion)
+	}
+	if f.From != nil {
+		add("received_at >= $%d", *f.From)
+	}
+	if f.To != nil {
+		add("received_at < $%d", *f.To)
+	}
+
+	args = append(args, f.Limit, f.Offset)
+	q := fmt.Sprintf(`
+		select
+			certification_id, device_id, hsn, config_version,
+			started_at, completed_at,
+			achieved_tier, marginal_metric, transport,
+			widevine_level, hdr_types, display_max_height, thermal_status,
+			download_steady_mbps, upload_steady_mbps, latency_median_ms,
+			received_at,
+			count(*) over () as total
+		from certifications
+		where %s
+		order by received_at desc
+		limit $%d offset $%d
+	`, strings.Join(conds, " and "), len(args)-1, len(args))
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("List query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ListSummary, 0, f.Limit)
+	total := 0
+	for rows.Next() {
+		var c ListSummary
+		if err := rows.Scan(
+			&c.CertificationID, &c.DeviceID, &c.HSN, &c.ConfigVersion,
+			&c.StartedAt, &c.CompletedAt,
+			&c.AchievedTier, &c.MarginalMetric, &c.Transport,
+			&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
+			&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
+			&c.ReceivedAt, &total,
+		); err != nil {
+			return nil, 0, fmt.Errorf("List scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("List rows: %w", err)
+	}
+	return out, total, nil
 }
 
 func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certification, error) {

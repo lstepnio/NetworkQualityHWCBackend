@@ -28,6 +28,7 @@ services:
       HTTP_ADDR: ":8080"
       DEV_SEED: "1"
       PII_PEPPER: dev-pepper-change-me
+      ADMIN_TOKEN: dev-admin-token-change-me
     ports:
       - "8080:8080"
 

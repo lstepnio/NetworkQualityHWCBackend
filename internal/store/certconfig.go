@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,6 +55,60 @@ func (s *CertConfigStore) Insert(ctx context.Context, configVersion string, sche
 		return fmt.Errorf("Insert: %w", err)
 	}
 	return nil
+}
+
+// ConfigSummary is one row of the cert_config table, as returned by ListAll.
+// Document is the full JSONB doc; callers that only want metadata can ignore it.
+type ConfigSummary struct {
+	ConfigVersion string
+	SchemaVersion int
+	IsActive      bool
+	CreatedAt     time.Time
+	Document      []byte
+}
+
+func (s *CertConfigStore) ListAll(ctx context.Context) ([]ConfigSummary, error) {
+	const q = `
+		select config_version, schema_version, is_active, created_at, document::text
+		from cert_config
+		order by created_at desc
+	`
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("ListAll: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ConfigSummary
+	for rows.Next() {
+		var c ConfigSummary
+		var doc string
+		if err := rows.Scan(&c.ConfigVersion, &c.SchemaVersion, &c.IsActive, &c.CreatedAt, &doc); err != nil {
+			return nil, fmt.Errorf("ListAll scan: %w", err)
+		}
+		c.Document = []byte(doc)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *CertConfigStore) GetByVersion(ctx context.Context, version string) (*ConfigSummary, error) {
+	const q = `
+		select config_version, schema_version, is_active, created_at, document::text
+		from cert_config
+		where config_version = $1
+	`
+	var c ConfigSummary
+	var doc string
+	err := s.pool.QueryRow(ctx, q, version).Scan(&c.ConfigVersion, &c.SchemaVersion, &c.IsActive, &c.CreatedAt, &doc)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoActiveConfig // reuses the not-found sentinel; no separate one needed yet
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetByVersion: %w", err)
+	}
+	c.Document = []byte(doc)
+	return &c, nil
 }
 
 func (s *CertConfigStore) Activate(ctx context.Context, configVersion string) error {

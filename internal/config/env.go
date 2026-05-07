@@ -12,6 +12,7 @@ type Env struct {
 	MigrationsPath string
 	DevSeed        bool
 	SeedPath       string
+	AdminToken     string
 }
 
 func Load() (Env, error) {
@@ -42,5 +43,6 @@ func Load() (Env, error) {
 		MigrationsPath: mig,
 		DevSeed:        os.Getenv("DEV_SEED") == "1",
 		SeedPath:       seed,
+		AdminToken:     os.Getenv("ADMIN_TOKEN"),
 	}, nil
 }
