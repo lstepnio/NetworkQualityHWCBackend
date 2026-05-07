@@ -7,14 +7,22 @@ The OpenAPI contract lives in
 [fisiontv-cert-contract](https://github.com/lstepnio/fisiontv-cert-contract)
 and is consumed here as the `contract/` git submodule, pinned to `v1.0.0`.
 
-## Endpoints (phase 1)
+## Endpoints
 
 | Method | Path                              | Status     |
 |--------|-----------------------------------|------------|
 | GET    | `/v1/cert-config`                 | shipped    |
-| POST   | `/v1/certifications`              | phase 2    |
-| GET    | `/v1/certifications/{id}`         | phase 2    |
+| POST   | `/v1/certifications`              | shipped    |
+| GET    | `/v1/certifications/{id}`         | shipped    |
 | GET    | `/healthz`                        | shipped    |
+
+`POST /v1/certifications` is idempotent on `certificationId`: the same id
+with the same body returns 200 and a single stored row; the same id with a
+different body returns 409 (`payload_hash` mismatch). The response body is
+the canonical, PII-redacted form of the stored payload.
+
+`GET /v1/certifications/{id}` returns the stored (PII-redacted) payload, or
+404 if the id is unknown.
 
 ## Decisions
 
@@ -30,9 +38,11 @@ and is consumed here as the `contract/` git submodule, pinned to `v1.0.0`.
 - **Deploy target.** Portable. The container takes config from env vars,
   logs JSON to stdout, ships migrations + seed inside the image. Pick the
   runtime when ready.
-- **PII.** Hash `bssid` / `ssid` / `publicIp` / `gatewayIp` / `ethernetMac` /
-  `wifiMac` / `hsn` on ingest with SHA-256 + a server-side pepper from
-  `PII_PEPPER`. Wired in phase 2 alongside `POST /v1/certifications`.
+- **PII.** `bssid` / `ssid` / `publicIp` / `gatewayIp` / `ethernetMac` /
+  `wifiMac` / `hsn` are redacted on ingest with peppered SHA-256
+  (`PII_PEPPER` env var). Raw values never reach disk; the rewrite happens
+  in `internal/pii/hash.go` before the JSONB payload is persisted. Hashing
+  is deterministic so the same identifier remains joinable across rows.
 
 ## Run locally
 
@@ -65,7 +75,7 @@ db/seed/                dev/staging seed JSON
 contract/               git submodule → fisiontv-cert-contract @ v1.0.0
 deploy/Dockerfile       multi-stage build, distroless runtime
 docker-compose.yml      local Postgres + server
-.github/workflows/      CI: build + test on PR
+.github/workflows/      CI: build + test on PR; tag-driven container release to GHCR
 ```
 
 ## Configuration (env vars)

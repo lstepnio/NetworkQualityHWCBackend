@@ -12,6 +12,7 @@ import (
 
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/api"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/config"
+	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
 )
 
@@ -41,6 +42,8 @@ func main() {
 	defer pool.Close()
 
 	cfgStore := store.NewCertConfigStore(pool)
+	certStore := store.NewCertificationsStore(pool)
+	hasher := pii.NewHasher(env.PIIPepper)
 
 	if env.DevSeed {
 		if err := store.SeedIfEmpty(ctx, cfgStore, env.SeedPath, logger); err != nil {
@@ -50,8 +53,10 @@ func main() {
 	}
 
 	router := api.NewRouter(api.Deps{
-		Logger:      logger,
-		CertConfigs: cfgStore,
+		Logger:         logger,
+		CertConfigs:    cfgStore,
+		Certifications: certStore,
+		PII:            hasher,
 	})
 
 	srv := &http.Server{
