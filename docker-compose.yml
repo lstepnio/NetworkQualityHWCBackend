@@ -16,9 +16,10 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   server:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
+    # Pinned to a published release. Bump this tag (or swap to `build:` for
+    # an iteration loop) and `docker compose up -d` to roll forward.
+    image: ghcr.io/lstepnio/networkqualityhwcbackend:0.1.1
+    pull_policy: always
     depends_on:
       postgres:
         condition: service_healthy

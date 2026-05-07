@@ -53,6 +53,13 @@ make dev          # docker compose: Postgres + server with auto-migrate + seed
 make curl-config  # smoke-test GET /v1/cert-config
 ```
 
+`docker-compose.yml` pins the server to a published GHCR image
+(`ghcr.io/lstepnio/networkqualityhwcbackend:0.1.1`). To run an in-flight
+change instead of a release, swap the `image:` block back to `build: { context: ., dockerfile: deploy/Dockerfile }`.
+To roll forward, cut a new tag (`git tag -a v0.1.2 …`) — the release
+workflow publishes the image — then bump the tag in `docker-compose.yml`
+and `docker compose up -d`.
+
 The server seeds the active config from `db/seed/cert-config.json` (a copy of
 `contract/fixtures/cert-config.example.json`) on first boot when `DEV_SEED=1`.
 On subsequent boots the seed is skipped.
