@@ -19,12 +19,14 @@ and is consumed here as the `contract/` git submodule, pinned to `v1.0.0`.
 
 ### Admin (`/admin/*`, shared-secret bearer, dashboard-facing)
 
-| Method | Path                                      | Status     |
-|--------|-------------------------------------------|------------|
-| GET    | `/admin/certifications` (paginated)       | shipped    |
-| GET    | `/admin/certifications/{id}`              | shipped    |
-| GET    | `/admin/cert-configs`                     | shipped    |
-| GET    | `/admin/cert-configs/{configVersion}`     | shipped    |
+| Method | Path                                                | Status     |
+|--------|-----------------------------------------------------|------------|
+| GET    | `/admin/certifications` (paginated)                 | shipped    |
+| GET    | `/admin/certifications/{id}`                        | shipped    |
+| GET    | `/admin/cert-configs`                               | shipped    |
+| GET    | `/admin/cert-configs/{configVersion}`               | shipped    |
+| POST   | `/admin/cert-configs`                               | shipped    |
+| POST   | `/admin/cert-configs/{configVersion}/activate`      | shipped    |
 
 ### Health
 

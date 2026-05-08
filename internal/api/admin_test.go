@@ -292,6 +292,168 @@ func TestAdmin_GetCertConfig_NotFound(t *testing.T) {
 	}
 }
 
+func adminPost(t *testing.T, router http.Handler, path, token string, body []byte) *http.Response {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	return w.Result()
+}
+
+func sampleConfigDoc(version string) []byte {
+	doc := map[string]any{
+		"schemaVersion": 1,
+		"configVersion": version,
+		"servers": []map[string]any{
+			{"id": "dfw", "name": "Dallas", "host": "speedtestdfw.gethotwired.com", "port": 8080, "secure": true, "weight": 1.0},
+		},
+		"tests": map[string]any{
+			"download": map[string]any{"durationSec": 10, "parallel": 4, "perRequestBytes": 100000000, "warmupFraction": 0.33},
+			"upload":   map[string]any{"durationSec": 5, "parallel": 2, "perRequestBytes": 50000000, "warmupFraction": 0.33},
+			"latency":  map[string]any{"samples": 10, "timeoutMs": 2000},
+			"playback": map[string]any{"manifestUrl": "https://example.test/m.mpd", "durationSec": 20},
+		},
+		"tiers": []map[string]any{
+			{"id": "sd", "displayName": "SD", "minDownloadMbps": 5, "minUploadMbps": 1, "maxLatencyMs": 200, "maxJitterMs": 50, "minPlaybackHeight": 480, "minPlaybackBitrateKbps": 1500},
+		},
+		"uploadResults": map[string]any{"enabled": true, "endpoint": "http://example.test/v1/certifications"},
+	}
+	b, _ := json.Marshal(doc)
+	return b
+}
+
+func TestAdmin_CreateCertConfig_OK(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	body := sampleConfigDoc("2030-01-01.test.1")
+	resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		got, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d (%s), want 201", resp.StatusCode, string(got))
+	}
+
+	var parsed map[string]any
+	dec(t, resp, &parsed)
+	if parsed["configVersion"] != "2030-01-01.test.1" {
+		t.Errorf("configVersion: got %v", parsed["configVersion"])
+	}
+	if parsed["isActive"] != false {
+		t.Errorf("isActive: got %v, want false (must not auto-activate)", parsed["isActive"])
+	}
+}
+
+func TestAdmin_CreateCertConfig_Conflict(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+	body := sampleConfigDoc("2026-05-06.1") // collides with the seeded version
+	resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestAdmin_CreateCertConfig_Validation(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	cases := []struct {
+		name string
+		mut  func(map[string]any)
+	}{
+		{"missing configVersion", func(m map[string]any) { delete(m, "configVersion") }},
+		{"empty configVersion", func(m map[string]any) { m["configVersion"] = "" }},
+		{"missing schemaVersion", func(m map[string]any) { delete(m, "schemaVersion") }},
+		{"zero schemaVersion", func(m map[string]any) { m["schemaVersion"] = 0 }},
+		{"empty servers", func(m map[string]any) { m["servers"] = []map[string]any{} }},
+		{"empty tiers", func(m map[string]any) { m["tiers"] = []map[string]any{} }},
+		{"missing tests", func(m map[string]any) { delete(m, "tests") }},
+		{"missing uploadResults", func(m map[string]any) { delete(m, "uploadResults") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			_ = json.Unmarshal(sampleConfigDoc("2030-validation."+tc.name), &doc)
+			tc.mut(doc)
+			b, _ := json.Marshal(doc)
+			resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, b)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status: got %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestAdmin_CreateCertConfig_Unauthorized(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+	resp := adminPost(t, env.router, "/admin/cert-configs", "", sampleConfigDoc("never.created"))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestAdmin_ActivateCertConfig(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	// Create a draft
+	body := sampleConfigDoc("2030-01-01.activate-test")
+	resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create draft: got %d", resp.StatusCode)
+	}
+
+	// Activate it
+	act := adminPost(t, env.router, "/admin/cert-configs/2030-01-01.activate-test/activate", testAdminToken, nil)
+	defer act.Body.Close()
+	if act.StatusCode != http.StatusOK {
+		got, _ := io.ReadAll(act.Body)
+		t.Fatalf("activate: got %d (%s)", act.StatusCode, string(got))
+	}
+	var parsed map[string]any
+	dec(t, act, &parsed)
+	if parsed["isActive"] != true {
+		t.Errorf("isActive: got %v, want true", parsed["isActive"])
+	}
+
+	// Confirm the seeded one is no longer active (exactly one active row at a time)
+	listResp := adminGet(t, env.router, "/admin/cert-configs", testAdminToken)
+	defer listResp.Body.Close()
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	dec(t, listResp, &list)
+	activeCount := 0
+	for _, c := range list.Items {
+		if c["isActive"] == true {
+			activeCount++
+		}
+	}
+	if activeCount != 1 {
+		t.Errorf("active count: got %d, want 1 (after activate)", activeCount)
+	}
+}
+
+func TestAdmin_ActivateCertConfig_NotFound(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+	resp := adminPost(t, env.router, "/admin/cert-configs/never-existed/activate", testAdminToken, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d, want 404", resp.StatusCode)
+	}
+}
+
 func dec(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
 	body, _ := io.ReadAll(resp.Body)

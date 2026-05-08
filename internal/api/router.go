@@ -45,10 +45,13 @@ func NewRouter(d Deps) http.Handler {
 		admin := NewAdminHandler(d.Certifications, d.CertConfigs)
 		r.Group(func(r chi.Router) {
 			r.Use(adminBearer(d.AdminToken))
+			r.Use(maxBodyBytes)
 			r.Get("/admin/certifications", admin.ListCertifications)
 			r.Get("/admin/certifications/{id}", admin.GetCertification)
 			r.Get("/admin/cert-configs", admin.ListCertConfigs)
 			r.Get("/admin/cert-configs/{version}", admin.GetCertConfig)
+			r.Post("/admin/cert-configs", admin.CreateCertConfig)
+			r.Post("/admin/cert-configs/{version}/activate", admin.ActivateCertConfig)
 		})
 	}
 

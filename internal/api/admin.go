@@ -1,13 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
 )
 
@@ -199,7 +202,7 @@ func (h *AdminHandler) ListCertConfigs(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) GetCertConfig(w http.ResponseWriter, r *http.Request) {
 	v := chi.URLParam(r, "version")
 	c, err := h.configs.GetByVersion(r.Context(), v)
-	if errors.Is(err, store.ErrNoActiveConfig) {
+	if errors.Is(err, store.ErrConfigNotFound) {
 		writeError(w, http.StatusNotFound, "no such config")
 		return
 	}
@@ -216,6 +219,140 @@ func (h *AdminHandler) GetCertConfig(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     c.CreatedAt,
 		Document:      doc,
 	})
+}
+
+// CreateCertConfig accepts a full CertConfig document, validates the
+// envelope, and inserts it as inactive. Activation is a separate call so
+// the operator can write the draft, review it, then atomically swap the
+// active row.
+func (h *AdminHandler) CreateCertConfig(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload exceeds 256 KB")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "could not read body: "+err.Error())
+		return
+	}
+
+	var doc map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	problems := validateCertConfigEnvelope(doc)
+	if len(problems) > 0 {
+		writeError(w, http.StatusBadRequest, "validation failed", problems...)
+		return
+	}
+
+	cv := doc["configVersion"].(string)
+	sv, _ := doc["schemaVersion"].(json.Number).Int64()
+
+	// Re-serialize so what we store is canonical (sorted keys via map
+	// marshal) regardless of how the caller formatted their JSON.
+	canonical, err := json.Marshal(doc)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "re-serialize failed")
+		return
+	}
+
+	if err := h.configs.Insert(r.Context(), cv, int(sv), canonical); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "config_version already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+
+	c, err := h.configs.GetByVersion(r.Context(), cv)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error after insert")
+		return
+	}
+	var docOut any
+	_ = json.Unmarshal(c.Document, &docOut)
+	writeJSONValue(w, http.StatusCreated, adminConfigSummary{
+		ConfigVersion: c.ConfigVersion,
+		SchemaVersion: c.SchemaVersion,
+		IsActive:      c.IsActive,
+		CreatedAt:     c.CreatedAt,
+		Document:      docOut,
+	})
+}
+
+// ActivateCertConfig flips is_active on the named config. Inside one
+// transaction the previously active row is cleared, so there is always
+// exactly one active config (enforced by the partial unique index too).
+func (h *AdminHandler) ActivateCertConfig(w http.ResponseWriter, r *http.Request) {
+	v := chi.URLParam(r, "version")
+	if err := h.configs.Activate(r.Context(), v); err != nil {
+		if errors.Is(err, store.ErrConfigNotFound) {
+			writeError(w, http.StatusNotFound, "no such config")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	c, err := h.configs.GetByVersion(r.Context(), v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error after activate")
+		return
+	}
+	var docOut any
+	_ = json.Unmarshal(c.Document, &docOut)
+	writeJSONValue(w, http.StatusOK, adminConfigSummary{
+		ConfigVersion: c.ConfigVersion,
+		SchemaVersion: c.SchemaVersion,
+		IsActive:      c.IsActive,
+		CreatedAt:     c.CreatedAt,
+		Document:      docOut,
+	})
+}
+
+// validateCertConfigEnvelope checks the small set of top-level fields we
+// need to insert a valid row. Deeper structural validation (per-tier
+// thresholds, server URLs, etc.) is intentionally deferred to the client
+// — the dashboard's structured editor is the right place to enforce those
+// rules; this admin endpoint trusts inputs from authenticated callers.
+func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
+	var problems []ErrorDetail
+
+	cv, _ := doc["configVersion"].(string)
+	if cv == "" {
+		problems = append(problems, ErrorDetail{Path: "configVersion", Msg: "required, non-empty string"})
+	}
+
+	sv, ok := doc["schemaVersion"].(json.Number)
+	if !ok {
+		problems = append(problems, ErrorDetail{Path: "schemaVersion", Msg: "required, integer >= 1"})
+	} else if n, err := sv.Int64(); err != nil || n < 1 {
+		problems = append(problems, ErrorDetail{Path: "schemaVersion", Msg: "must be integer >= 1"})
+	}
+
+	for _, key := range []string{"servers", "tiers"} {
+		arr, ok := doc[key].([]any)
+		if !ok {
+			problems = append(problems, ErrorDetail{Path: key, Msg: "required array"})
+		} else if len(arr) == 0 {
+			problems = append(problems, ErrorDetail{Path: key, Msg: "must contain at least one entry"})
+		}
+	}
+
+	for _, key := range []string{"tests", "uploadResults"} {
+		if _, ok := doc[key].(map[string]any); !ok {
+			problems = append(problems, ErrorDetail{Path: key, Msg: "required object"})
+		}
+	}
+
+	return problems
 }
 
 func atoiOr(s string, def int) int {

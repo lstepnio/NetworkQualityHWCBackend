@@ -10,7 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNoActiveConfig = errors.New("store: no active cert_config row")
+var (
+	ErrNoActiveConfig = errors.New("store: no active cert_config row")
+	ErrConfigNotFound = errors.New("store: cert_config row not found")
+)
 
 type CertConfigStore struct {
 	pool *pgxpool.Pool
@@ -102,7 +105,7 @@ func (s *CertConfigStore) GetByVersion(ctx context.Context, version string) (*Co
 	var doc string
 	err := s.pool.QueryRow(ctx, q, version).Scan(&c.ConfigVersion, &c.SchemaVersion, &c.IsActive, &c.CreatedAt, &doc)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNoActiveConfig // reuses the not-found sentinel; no separate one needed yet
+		return nil, ErrConfigNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("GetByVersion: %w", err)
@@ -126,7 +129,7 @@ func (s *CertConfigStore) Activate(ctx context.Context, configVersion string) er
 		return fmt.Errorf("Activate set: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("Activate: no row with config_version=%q", configVersion)
+		return ErrConfigNotFound
 	}
 	return tx.Commit(ctx)
 }
