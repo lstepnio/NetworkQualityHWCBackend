@@ -96,12 +96,21 @@ internal/api/           chi router, middleware, handlers
 internal/store/         pgx pool, queries, migrations, seed loader
 internal/config/        env-var loader
 db/migrations/          golang-migrate .sql files
-db/seed/                dev/staging seed JSON
+db/seed/                dev seed JSON (lab-targeted, kill-switch on)
+db/templates/           reproducible cert_config templates for ops install
 contract/               git submodule → fisiontv-cert-contract @ v1.0.0
 deploy/Dockerfile       multi-stage build, distroless runtime
 docker-compose.yml      local Postgres + server
+docs/DEPLOY.md          operator runbook for first-boot + roll-forward
 .github/workflows/      CI: build + test on PR; tag-driven container release to GHCR
 ```
+
+## Production install
+
+See [docs/DEPLOY.md](docs/DEPLOY.md). Short version: bring up the image
+behind your own DNS + TLS, then `POST /admin/cert-configs` with
+`db/templates/cert-config-production.json`, then activate it. The lab
+seed is intentionally not used in production (it has lab-only values).
 
 ## Configuration (env vars)
 

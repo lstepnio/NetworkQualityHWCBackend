@@ -1,0 +1,131 @@
+{
+    "tests": {
+        "upload": {
+            "parallel": 2,
+            "durationSec": 5,
+            "warmupFraction": 0.33,
+            "perRequestBytes": 50000000
+        },
+        "latency": {
+            "samples": 10,
+            "timeoutMs": 2000
+        },
+        "download": {
+            "parallel": 4,
+            "durationSec": 10,
+            "warmupFraction": 0.33,
+            "perRequestBytes": 100000000
+        },
+        "playback": {
+            "durationSec": 20,
+            "manifestUrl": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd"
+        }
+    },
+    "tiers": [
+        {
+            "id": "sd",
+            "displayName": "SD",
+            "maxJitterMs": 50,
+            "maxLatencyMs": 200,
+            "minUploadMbps": 1,
+            "minDownloadMbps": 5,
+            "minPlaybackHeight": 480,
+            "minPlaybackBitrateKbps": 1500
+        },
+        {
+            "id": "hd",
+            "displayName": "HD",
+            "maxJitterMs": 30,
+            "maxLatencyMs": 120,
+            "minUploadMbps": 3,
+            "minDownloadMbps": 12,
+            "minPlaybackHeight": 1080,
+            "minPlaybackBitrateKbps": 4000
+        },
+        {
+            "id": "uhd",
+            "displayName": "4K",
+            "maxJitterMs": 20,
+            "maxLatencyMs": 80,
+            "minUploadMbps": 5,
+            "minDownloadMbps": 40,
+            "minPlaybackHeight": 2160,
+            "minPlaybackBitrateKbps": 16000
+        },
+        {
+            "id": "uhd_hdr",
+            "displayName": "4K HDR",
+            "maxJitterMs": 15,
+            "requiresHdr": true,
+            "maxLatencyMs": 50,
+            "minUploadMbps": 5,
+            "minDownloadMbps": 55,
+            "minPlaybackHeight": 2160,
+            "minPlaybackBitrateKbps": 25000
+        }
+    ],
+    "servers": [
+        {
+            "id": "mia",
+            "host": "speedtestmia.gethotwired.com",
+            "name": "Miami",
+            "port": 8080,
+            "secure": true,
+            "weight": 1
+        },
+        {
+            "id": "apf",
+            "host": "speedtestapf.gethotwired.com",
+            "name": "Apopka",
+            "port": 8080,
+            "secure": true,
+            "weight": 1
+        },
+        {
+            "id": "atl",
+            "host": "speedtestatl.gethotwired.com",
+            "name": "Atlanta",
+            "port": 8080,
+            "secure": true,
+            "weight": 1
+        },
+        {
+            "id": "boca",
+            "host": "speedtestboca.gethotwired.com",
+            "name": "Boca Raton",
+            "port": 8080,
+            "secure": true,
+            "weight": 1
+        },
+        {
+            "id": "dfw",
+            "host": "speedtestdfw.gethotwired.com",
+            "name": "Dallas/Fort Worth",
+            "port": 8080,
+            "secure": true,
+            "weight": 1
+        },
+        {
+            "id": "la",
+            "host": "speedtestla.gethotwired.com",
+            "name": "Los Angeles",
+            "port": 8080,
+            "secure": true,
+            "weight": 1
+        },
+        {
+            "id": "nc",
+            "host": "speedtestnc.gethotwired.com",
+            "name": "North Carolina",
+            "port": 8080,
+            "secure": true,
+            "weight": 1
+        }
+    ],
+    "configVersion": "2026-05-08.1",
+    "schemaVersion": 1,
+    "uploadResults": {
+        "enabled": true,
+        "endpoint": "https://certifier-api.gethotwired.com/v1/certifications"
+    }
+}
