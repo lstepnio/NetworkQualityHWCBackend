@@ -20,10 +20,18 @@ import (
 type AdminHandler struct {
 	certs   *store.CertificationsStore
 	configs *store.CertConfigStore
+	pii     publicIPHasher
 }
 
-func NewAdminHandler(certs *store.CertificationsStore, configs *store.CertConfigStore) *AdminHandler {
-	return &AdminHandler{certs: certs, configs: configs}
+// publicIPHasher is the small slice of *pii.Hasher we need — accept any
+// hasher with a Hash method so tests can fake it without dragging in the
+// pii package's keying.
+type publicIPHasher interface {
+	Hash(value string) string
+}
+
+func NewAdminHandler(certs *store.CertificationsStore, configs *store.CertConfigStore, hasher publicIPHasher) *AdminHandler {
+	return &AdminHandler{certs: certs, configs: configs, pii: hasher}
 }
 
 // adminListResponse wraps a paginated list. items is always an array (never
@@ -36,23 +44,24 @@ type adminListResponse struct {
 }
 
 type adminCertSummary struct {
-	CertificationID    string     `json:"certificationId"`
-	DeviceID           string     `json:"deviceId"`
-	HSN                *string    `json:"hsn,omitempty"`
-	ConfigVersion      *string    `json:"configVersion,omitempty"`
-	StartedAt          time.Time  `json:"startedAt"`
-	CompletedAt        time.Time  `json:"completedAt"`
-	AchievedTier       string     `json:"achievedTier"`
-	MarginalMetric     *string    `json:"marginalMetric,omitempty"`
-	Transport          string     `json:"transport"`
-	WidevineLevel      *string    `json:"widevineLevel,omitempty"`
-	HDRTypes           []string   `json:"hdrTypes"`
-	DisplayMaxHeight   *int       `json:"displayMaxHeight,omitempty"`
-	ThermalStatus      *string    `json:"thermalStatus,omitempty"`
-	DownloadSteadyMbps *float64   `json:"downloadSteadyMbps,omitempty"`
-	UploadSteadyMbps   *float64   `json:"uploadSteadyMbps,omitempty"`
-	LatencyMedianMs    *int       `json:"latencyMedianMs,omitempty"`
-	ReceivedAt         time.Time  `json:"receivedAt"`
+	CertificationID    string    `json:"certificationId"`
+	DeviceID           string    `json:"deviceId"`
+	HSN                *string   `json:"hsn,omitempty"`
+	ConfigVersion      *string   `json:"configVersion,omitempty"`
+	StartedAt          time.Time `json:"startedAt"`
+	CompletedAt        time.Time `json:"completedAt"`
+	AchievedTier       string    `json:"achievedTier"`
+	MarginalMetric     *string   `json:"marginalMetric,omitempty"`
+	Transport          string    `json:"transport"`
+	WidevineLevel      *string   `json:"widevineLevel,omitempty"`
+	HDRTypes           []string  `json:"hdrTypes"`
+	DisplayMaxHeight   *int      `json:"displayMaxHeight,omitempty"`
+	ThermalStatus      *string   `json:"thermalStatus,omitempty"`
+	DownloadSteadyMbps *float64  `json:"downloadSteadyMbps,omitempty"`
+	UploadSteadyMbps   *float64  `json:"uploadSteadyMbps,omitempty"`
+	LatencyMedianMs    *int      `json:"latencyMedianMs,omitempty"`
+	PublicIPHash       *string   `json:"publicIpHash,omitempty"` // never the raw IP — already redacted
+	ReceivedAt         time.Time `json:"receivedAt"`
 }
 
 func toSummary(s store.ListSummary) adminCertSummary {
@@ -77,6 +86,7 @@ func toSummary(s store.ListSummary) adminCertSummary {
 		DownloadSteadyMbps: s.DownloadSteadyMbps,
 		UploadSteadyMbps:   s.UploadSteadyMbps,
 		LatencyMedianMs:    s.LatencyMedianMs,
+		PublicIPHash:       s.PublicIP,
 		ReceivedAt:         s.ReceivedAt,
 	}
 }
@@ -87,8 +97,15 @@ func (h *AdminHandler) ListCertifications(w http.ResponseWriter, r *http.Request
 		Tier:          q.Get("tier"),
 		DeviceID:      q.Get("deviceId"),
 		ConfigVersion: q.Get("configVersion"),
+		HSN:           q.Get("hsn"),
 		Limit:         atoiOr(q.Get("limit"), 50),
 		Offset:        atoiOr(q.Get("offset"), 0),
+	}
+	// Caller types the raw IP in the search box; we hash it server-side
+	// (the column is the peppered SHA-256, not the plaintext) so the search
+	// stays exact-match without leaking IPs over the wire.
+	if pip := q.Get("publicIp"); pip != "" {
+		filter.PublicIPHash = h.pii.Hash(pip)
 	}
 	if v := q.Get("from"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
@@ -154,6 +171,7 @@ func (h *AdminHandler) GetCertification(w http.ResponseWriter, r *http.Request) 
 			DownloadSteadyMbps: c.DownloadSteadyMbps,
 			UploadSteadyMbps:   c.UploadSteadyMbps,
 			LatencyMedianMs:    c.LatencyMedianMs,
+			PublicIP:           c.PublicIP,
 			ReceivedAt:         c.ReceivedAt,
 		}),
 		"payloadHash": c.PayloadHash,

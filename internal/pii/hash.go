@@ -32,9 +32,12 @@ func (h *Hasher) Hash(value string) string {
 }
 
 // piiPaths enumerates the JSONPath-ish locations rewritten in every payload.
-// Order matches SPEC §2 + the user's explicit list in the phase-1 plan.
+// HSN was originally on this list per SPEC §2's catch-all but has been
+// promoted to a non-PII identifier — it's the join key to the account-
+// management system, so it has to land in plain text. Existing rows
+// already have hashed HSN values and stay that way (one-way SHA-256
+// can't be reversed; only future inserts get plain text).
 var piiPaths = [][]string{
-	{"identity", "hsn"},
 	{"identity", "ethernetMac"},
 	{"identity", "wifiMac"},
 	{"network", "publicIp"},

@@ -64,8 +64,12 @@ func (h *CertificationsHandler) Post(w http.ResponseWriter, r *http.Request) {
 
 	// Re-extract the PII-affected hot-path columns from the redacted map so
 	// what lands in those columns matches what's in the JSONB payload.
+	// HSN is no longer redacted (it's the join key to the account system,
+	// per the May 2026 policy update) — the hot-path column carries the
+	// plain value the device reported.
 	cert.HSN = strPtr(getString(parsed, "identity", "hsn"))
 	cert.EthernetMac = strPtr(getString(parsed, "identity", "ethernetMac"))
+	cert.PublicIP = strPtr(getString(parsed, "network", "publicIp"))
 
 	outcome, err := h.store.Upsert(r.Context(), cert)
 	if err != nil {

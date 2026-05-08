@@ -274,6 +274,8 @@ func TestGetCertification_NotFound(t *testing.T) {
 }
 
 // PII redaction lands in the stored payload AND the hot-path columns.
+// HSN is intentionally exempt — it's the join key to the account system
+// per the May 2026 policy update. Everything else stays hashed.
 func TestPostCertification_PIIRedacted(t *testing.T) {
 	env, cleanup := newCertEnv(t)
 	defer cleanup()
@@ -299,9 +301,15 @@ func TestPostCertification_PIIRedacted(t *testing.T) {
 	}
 
 	hasher := pii.NewHasher(pilotPepper)
-	hsnHash := hasher.Hash("RAW_HSN_12345")
-	if cert.HSN == nil || *cert.HSN != hsnHash {
-		t.Errorf("hsn column: got %v, want %s", cert.HSN, hsnHash)
+
+	// HSN is now PLAIN TEXT in both the column and the JSONB payload.
+	if cert.HSN == nil || *cert.HSN != "RAW_HSN_12345" {
+		t.Errorf("hsn column: got %v, want plain RAW_HSN_12345", cert.HSN)
+	}
+	// publicIp on the column is the hashed value (separate hot-path field
+	// for searches; admin API hashes the query input before comparison).
+	if cert.PublicIP == nil || *cert.PublicIP != hasher.Hash("203.0.113.5") {
+		t.Errorf("public_ip column: got %v, want hash of 203.0.113.5", cert.PublicIP)
 	}
 
 	var stored map[string]any
@@ -309,8 +317,11 @@ func TestPostCertification_PIIRedacted(t *testing.T) {
 		t.Fatalf("stored payload parse: %v", err)
 	}
 	storedIdentity := stored["identity"].(map[string]any)
-	if storedIdentity["hsn"] != hsnHash {
-		t.Errorf("payload.identity.hsn: got %v, want %s", storedIdentity["hsn"], hsnHash)
+	if storedIdentity["hsn"] != "RAW_HSN_12345" {
+		t.Errorf("payload.identity.hsn: got %v, want plain RAW_HSN_12345", storedIdentity["hsn"])
+	}
+	if storedIdentity["ethernetMac"] != hasher.Hash("aa:bb:cc:dd:ee:ff") {
+		t.Errorf("payload.identity.ethernetMac not hashed: %v", storedIdentity["ethernetMac"])
 	}
 	storedNet := stored["network"].(map[string]any)
 	if storedNet["publicIp"] != hasher.Hash("203.0.113.5") {

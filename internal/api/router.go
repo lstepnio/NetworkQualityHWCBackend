@@ -41,8 +41,8 @@ func NewRouter(d Deps) http.Handler {
 		}
 	})
 
-	if d.Certifications != nil && d.CertConfigs != nil {
-		admin := NewAdminHandler(d.Certifications, d.CertConfigs)
+	if d.Certifications != nil && d.CertConfigs != nil && d.PII != nil {
+		admin := NewAdminHandler(d.Certifications, d.CertConfigs, d.PII)
 		r.Group(func(r chi.Router) {
 			r.Use(adminBearer(d.AdminToken))
 			r.Use(maxBodyBytes)

@@ -149,6 +149,93 @@ func TestAdmin_ListCertifications_Pagination(t *testing.T) {
 	}
 }
 
+func TestAdmin_ListCertifications_FilterByHSN(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	// Two POSTs with distinct HSNs.
+	for i, hsn := range []string{"E44AW3251919440", "E44AW9999999999"} {
+		fix := loadCertFixture(t)
+		fix["certificationId"] = []string{
+			"a0000001-0000-0000-0000-000000000001",
+			"a0000002-0000-0000-0000-000000000002",
+		}[i]
+		fix["identity"].(map[string]any)["hsn"] = hsn
+		body, _ := json.Marshal(fix)
+		r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+		for k, v := range defaultHeaders() {
+			r.Header.Set(k, v)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.router.ServeHTTP(w, r)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed POST %d: got %d", i, w.Code)
+		}
+	}
+
+	resp := adminGet(t, env.router, "/admin/certifications?hsn=E44AW3251919440", testAdminToken)
+	defer resp.Body.Close()
+	var body struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	dec(t, resp, &body)
+	if body.Total != 1 {
+		t.Errorf("total: got %d, want 1 (HSN filter)", body.Total)
+	}
+	if len(body.Items) > 0 && body.Items[0]["hsn"] != "E44AW3251919440" {
+		t.Errorf("hsn echoed: got %v, want plain E44AW3251919440", body.Items[0]["hsn"])
+	}
+}
+
+func TestAdmin_ListCertifications_FilterByPublicIP(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	// Two POSTs with distinct public IPs. The publicIp filter takes the
+	// raw IP and the server hashes it before comparing — exact match works.
+	for i, ip := range []string{"203.0.113.5", "198.51.100.42"} {
+		fix := loadCertFixture(t)
+		fix["certificationId"] = []string{
+			"b0000001-0000-0000-0000-000000000001",
+			"b0000002-0000-0000-0000-000000000002",
+		}[i]
+		fix["network"].(map[string]any)["publicIp"] = ip
+		body, _ := json.Marshal(fix)
+		r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+		for k, v := range defaultHeaders() {
+			r.Header.Set(k, v)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.router.ServeHTTP(w, r)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed POST %d: got %d", i, w.Code)
+		}
+	}
+
+	resp := adminGet(t, env.router, "/admin/certifications?publicIp=203.0.113.5", testAdminToken)
+	defer resp.Body.Close()
+	var body struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	dec(t, resp, &body)
+	if body.Total != 1 {
+		t.Errorf("total: got %d, want 1 (publicIp filter)", body.Total)
+	}
+	// The response carries publicIpHash, never the plain IP.
+	if len(body.Items) > 0 {
+		if _, hasPlain := body.Items[0]["publicIp"]; hasPlain {
+			t.Error("response leaks plain publicIp; should only carry publicIpHash")
+		}
+		if h, ok := body.Items[0]["publicIpHash"].(string); !ok || len(h) != 64 {
+			t.Errorf("publicIpHash: got %v, want 64-char hex", body.Items[0]["publicIpHash"])
+		}
+	}
+}
+
 func TestAdmin_ListCertifications_FilterByTier(t *testing.T) {
 	env, cleanup := newAdminEnv(t)
 	defer cleanup()

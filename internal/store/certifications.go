@@ -47,6 +47,7 @@ type Certification struct {
 	DownloadSteadyMbps *float64
 	UploadSteadyMbps   *float64
 	LatencyMedianMs    *int
+	PublicIP           *string // Stored as the peppered SHA-256 hash; admin API hashes query inputs to match.
 	Payload            []byte
 	PayloadHash        string
 	ReceivedAt         time.Time
@@ -75,6 +76,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
+			public_ip,
 			payload, payload_hash
 		) values (
 			$1, $2, $3, $4, $5,
@@ -82,7 +84,8 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			$10, $11, $12,
 			$13, $14, $15, $16,
 			$17, $18, $19,
-			$20::jsonb, $21
+			$20,
+			$21::jsonb, $22
 		)
 		on conflict (certification_id) do nothing
 		returning certification_id
@@ -94,6 +97,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 		c.AchievedTier, c.MarginalMetric, c.Transport,
 		c.WidevineLevel, c.HDRTypes, c.DisplayMaxHeight, c.ThermalStatus,
 		c.DownloadSteadyMbps, c.UploadSteadyMbps, c.LatencyMedianMs,
+		c.PublicIP,
 		string(c.Payload), c.PayloadHash,
 	).Scan(&id)
 	if err == nil {
@@ -121,6 +125,8 @@ type ListFilter struct {
 	Tier          string
 	DeviceID      string
 	ConfigVersion string
+	HSN           string // exact match against the (now plain) hsn column
+	PublicIPHash  string // exact match against the (hashed) public_ip column — caller hashes
 	From          *time.Time
 	To            *time.Time
 	Limit         int
@@ -146,6 +152,7 @@ type ListSummary struct {
 	DownloadSteadyMbps *float64
 	UploadSteadyMbps   *float64
 	LatencyMedianMs    *int
+	PublicIP           *string // hashed
 	ReceivedAt         time.Time
 }
 
@@ -172,6 +179,12 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 	if f.ConfigVersion != "" {
 		add("config_version = $%d", f.ConfigVersion)
 	}
+	if f.HSN != "" {
+		add("hsn = $%d", f.HSN)
+	}
+	if f.PublicIPHash != "" {
+		add("public_ip = $%d", f.PublicIPHash)
+	}
 	if f.From != nil {
 		add("received_at >= $%d", *f.From)
 	}
@@ -187,7 +200,7 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
-			received_at,
+			public_ip, received_at,
 			count(*) over () as total
 		from certifications
 		where %s
@@ -211,7 +224,7 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			&c.AchievedTier, &c.MarginalMetric, &c.Transport,
 			&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 			&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
-			&c.ReceivedAt, &total,
+			&c.PublicIP, &c.ReceivedAt, &total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("List scan: %w", err)
 		}
@@ -231,6 +244,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
+			public_ip,
 			payload::text, payload_hash, received_at
 		from certifications
 		where certification_id = $1
@@ -243,6 +257,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 		&c.AchievedTier, &c.MarginalMetric, &c.Transport,
 		&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 		&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
+		&c.PublicIP,
 		&payloadStr, &c.PayloadHash, &c.ReceivedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
