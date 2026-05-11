@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/api"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
@@ -310,6 +311,172 @@ func TestAdmin_GetCertification_NotFound(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAdmin_QueueDelay_DerivedField(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	// Seed two rows: one fresh (small delay), one queue-drained (3 days later).
+	for i, sub := range []string{"2026-05-06T18:37:48Z", "2026-05-09T18:37:48Z"} {
+		fix := loadCertFixture(t)
+		fix["certificationId"] = []string{
+			"c0000001-0000-0000-0000-000000000001",
+			"c0000002-0000-0000-0000-000000000002",
+		}[i]
+		fix["completedAt"] = "2026-05-06T18:37:46Z"
+		fix["enqueuedAt"] = "2026-05-06T18:37:46Z"
+		fix["submittedAt"] = sub
+		body, _ := json.Marshal(fix)
+		r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+		for k, v := range defaultHeaders() {
+			r.Header.Set(k, v)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.router.ServeHTTP(w, r)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed %d: got %d", i, w.Code)
+		}
+	}
+
+	resp := adminGet(t, env.router, "/admin/certifications", testAdminToken)
+	defer resp.Body.Close()
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	dec(t, resp, &body)
+
+	// Find both rows and check their queueDelaySeconds.
+	delays := map[string]float64{}
+	for _, it := range body.Items {
+		id, _ := it["certificationId"].(string)
+		if d, ok := it["queueDelaySeconds"].(float64); ok {
+			delays[id] = d
+		}
+	}
+	if d := delays["c0000001-0000-0000-0000-000000000001"]; d > 5 {
+		t.Errorf("fresh row delay: got %v, want <= 5", d)
+	}
+	if d := delays["c0000002-0000-0000-0000-000000000002"]; d < 3*24*3600-60 {
+		t.Errorf("queue-drained row delay: got %v, want ~3 days", d)
+	}
+}
+
+func TestAdmin_QueueDelay_NullForOlderClient(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	fix := loadCertFixture(t)
+	delete(fix, "enqueuedAt")
+	delete(fix, "submittedAt")
+	body, _ := json.Marshal(fix)
+	r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+	for k, v := range defaultHeaders() {
+		r.Header.Set(k, v)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, r)
+
+	resp := adminGet(t, env.router, "/admin/certifications/"+fixtureID, testAdminToken)
+	defer resp.Body.Close()
+	var detail struct {
+		Summary map[string]any `json:"summary"`
+	}
+	dec(t, resp, &detail)
+	if _, ok := detail.Summary["queueDelaySeconds"]; ok {
+		t.Errorf("queueDelaySeconds should be omitted for older-client row; got: %v",
+			detail.Summary["queueDelaySeconds"])
+	}
+}
+
+func TestAdmin_ListCertifications_QueuedOnly(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	// One fresh row, one delayed by 1 hour, one delayed by 3 days.
+	cases := []struct {
+		id  string
+		sub string
+	}{
+		{"d0000001-0000-0000-0000-000000000001", "2026-05-06T18:37:48Z"}, // fresh
+		{"d0000002-0000-0000-0000-000000000002", "2026-05-06T19:37:46Z"}, // 1h delay
+		{"d0000003-0000-0000-0000-000000000003", "2026-05-09T18:37:46Z"}, // 3d delay
+	}
+	for _, c := range cases {
+		fix := loadCertFixture(t)
+		fix["certificationId"] = c.id
+		fix["completedAt"] = "2026-05-06T18:37:46Z"
+		fix["enqueuedAt"] = "2026-05-06T18:37:46Z"
+		fix["submittedAt"] = c.sub
+		body, _ := json.Marshal(fix)
+		r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+		for k, v := range defaultHeaders() {
+			r.Header.Set(k, v)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.router.ServeHTTP(w, r)
+	}
+
+	resp := adminGet(t, env.router, "/admin/certifications?queuedOnly=true", testAdminToken)
+	defer resp.Body.Close()
+	var body struct {
+		Total int `json:"total"`
+	}
+	dec(t, resp, &body)
+	if body.Total != 2 {
+		t.Errorf("queuedOnly total: got %d, want 2 (the 1h and 3d delays)", body.Total)
+	}
+}
+
+func TestAdmin_QueueStats(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	// Seed three rows with known delays in seconds: 10, 100, 1000.
+	now := time.Now().UTC()
+	for i, delaySec := range []int{10, 100, 1000} {
+		fix := loadCertFixture(t)
+		fix["certificationId"] = []string{
+			"e0000001-0000-0000-0000-000000000001",
+			"e0000002-0000-0000-0000-000000000002",
+			"e0000003-0000-0000-0000-000000000003",
+		}[i]
+		// completedAt within the 24h window so the stats query picks it up.
+		completed := now.Add(-1 * time.Hour)
+		submitted := completed.Add(time.Duration(delaySec) * time.Second)
+		fix["startedAt"] = completed.Add(-30 * time.Second).Format(time.RFC3339)
+		fix["completedAt"] = completed.Format(time.RFC3339)
+		fix["enqueuedAt"] = completed.Format(time.RFC3339)
+		fix["submittedAt"] = submitted.Format(time.RFC3339)
+		body, _ := json.Marshal(fix)
+		r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+		for k, v := range defaultHeaders() {
+			r.Header.Set(k, v)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.router.ServeHTTP(w, r)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed %d: got %d", i, w.Code)
+		}
+	}
+
+	resp := adminGet(t, env.router, "/admin/queue-stats?windowHours=24", testAdminToken)
+	defer resp.Body.Close()
+	var body map[string]any
+	dec(t, resp, &body)
+	if int(body["sampleSize"].(float64)) != 3 {
+		t.Errorf("sampleSize: got %v, want 3", body["sampleSize"])
+	}
+	if body["medianSeconds"].(float64) != 100 {
+		t.Errorf("median: got %v, want 100", body["medianSeconds"])
+	}
+	if body["maxSeconds"].(float64) != 1000 {
+		t.Errorf("max: got %v, want 1000", body["maxSeconds"])
 	}
 }
 

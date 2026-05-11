@@ -44,24 +44,27 @@ type adminListResponse struct {
 }
 
 type adminCertSummary struct {
-	CertificationID    string    `json:"certificationId"`
-	DeviceID           string    `json:"deviceId"`
-	HSN                *string   `json:"hsn,omitempty"`
-	ConfigVersion      *string   `json:"configVersion,omitempty"`
-	StartedAt          time.Time `json:"startedAt"`
-	CompletedAt        time.Time `json:"completedAt"`
-	AchievedTier       string    `json:"achievedTier"`
-	MarginalMetric     *string   `json:"marginalMetric,omitempty"`
-	Transport          string    `json:"transport"`
-	WidevineLevel      *string   `json:"widevineLevel,omitempty"`
-	HDRTypes           []string  `json:"hdrTypes"`
-	DisplayMaxHeight   *int      `json:"displayMaxHeight,omitempty"`
-	ThermalStatus      *string   `json:"thermalStatus,omitempty"`
-	DownloadSteadyMbps *float64  `json:"downloadSteadyMbps,omitempty"`
-	UploadSteadyMbps   *float64  `json:"uploadSteadyMbps,omitempty"`
-	LatencyMedianMs    *int      `json:"latencyMedianMs,omitempty"`
-	PublicIPHash       *string   `json:"publicIpHash,omitempty"` // never the raw IP — already redacted
-	ReceivedAt         time.Time `json:"receivedAt"`
+	CertificationID    string     `json:"certificationId"`
+	DeviceID           string     `json:"deviceId"`
+	HSN                *string    `json:"hsn,omitempty"`
+	ConfigVersion      *string    `json:"configVersion,omitempty"`
+	StartedAt          time.Time  `json:"startedAt"`
+	CompletedAt        time.Time  `json:"completedAt"`
+	AchievedTier       string     `json:"achievedTier"`
+	MarginalMetric     *string    `json:"marginalMetric,omitempty"`
+	Transport          string     `json:"transport"`
+	WidevineLevel      *string    `json:"widevineLevel,omitempty"`
+	HDRTypes           []string   `json:"hdrTypes"`
+	DisplayMaxHeight   *int       `json:"displayMaxHeight,omitempty"`
+	ThermalStatus      *string    `json:"thermalStatus,omitempty"`
+	DownloadSteadyMbps *float64   `json:"downloadSteadyMbps,omitempty"`
+	UploadSteadyMbps   *float64   `json:"uploadSteadyMbps,omitempty"`
+	LatencyMedianMs    *int       `json:"latencyMedianMs,omitempty"`
+	PublicIPHash       *string    `json:"publicIpHash,omitempty"` // never the raw IP — already redacted
+	EnqueuedAt         *time.Time `json:"enqueuedAt,omitempty"`   // contract v1.1.0+; null for older clients
+	SubmittedAt        *time.Time `json:"submittedAt,omitempty"`
+	QueueDelaySeconds  *int64     `json:"queueDelaySeconds,omitempty"` // submittedAt - completedAt; null when submittedAt is null
+	ReceivedAt         time.Time  `json:"receivedAt"`
 }
 
 func toSummary(s store.ListSummary) adminCertSummary {
@@ -87,8 +90,26 @@ func toSummary(s store.ListSummary) adminCertSummary {
 		UploadSteadyMbps:   s.UploadSteadyMbps,
 		LatencyMedianMs:    s.LatencyMedianMs,
 		PublicIPHash:       s.PublicIP,
+		EnqueuedAt:         s.EnqueuedAt,
+		SubmittedAt:        s.SubmittedAt,
+		QueueDelaySeconds:  queueDelay(s.CompletedAt, s.SubmittedAt),
 		ReceivedAt:         s.ReceivedAt,
 	}
+}
+
+// queueDelay returns submittedAt - completedAt in whole seconds, or nil
+// when submittedAt is null (older-client payload). Negative deltas (clock
+// skew, validated within 60s tolerance at ingest) round to zero so the
+// dashboard never has to render "delivered -3s later".
+func queueDelay(completedAt time.Time, submittedAt *time.Time) *int64 {
+	if submittedAt == nil {
+		return nil
+	}
+	d := int64(submittedAt.Sub(completedAt).Seconds())
+	if d < 0 {
+		d = 0
+	}
+	return &d
 }
 
 func (h *AdminHandler) ListCertifications(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +119,7 @@ func (h *AdminHandler) ListCertifications(w http.ResponseWriter, r *http.Request
 		DeviceID:      q.Get("deviceId"),
 		ConfigVersion: q.Get("configVersion"),
 		HSN:           q.Get("hsn"),
+		QueuedOnly:    q.Get("queuedOnly") == "true",
 		Limit:         atoiOr(q.Get("limit"), 50),
 		Offset:        atoiOr(q.Get("offset"), 0),
 	}
@@ -172,10 +194,38 @@ func (h *AdminHandler) GetCertification(w http.ResponseWriter, r *http.Request) 
 			UploadSteadyMbps:   c.UploadSteadyMbps,
 			LatencyMedianMs:    c.LatencyMedianMs,
 			PublicIP:           c.PublicIP,
+			EnqueuedAt:         c.EnqueuedAt,
+			SubmittedAt:        c.SubmittedAt,
 			ReceivedAt:         c.ReceivedAt,
 		}),
 		"payloadHash": c.PayloadHash,
 		"payload":     payload,
+	})
+}
+
+// QueueStats reports the queue-delay distribution over a configurable
+// window. Spikes here usually mean the publish API was unavailable for
+// some segment of the fleet. Only rows with a non-null submitted_at
+// participate (older-client payloads carry no submission timestamp).
+func (h *AdminHandler) QueueStats(w http.ResponseWriter, r *http.Request) {
+	hours := atoiOr(r.URL.Query().Get("windowHours"), 24)
+	if hours < 1 {
+		hours = 1
+	}
+	if hours > 24*30 {
+		hours = 24 * 30 // cap at 30 days
+	}
+	stats, err := h.certs.QueueStats(r.Context(), hours)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	writeJSONValue(w, http.StatusOK, map[string]any{
+		"windowHours":   hours,
+		"sampleSize":    stats.SampleSize,
+		"medianSeconds": stats.MedianSeconds,
+		"p95Seconds":    stats.P95Seconds,
+		"maxSeconds":    stats.MaxSeconds,
 	})
 }
 

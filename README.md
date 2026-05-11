@@ -27,6 +27,13 @@ and is consumed here as the `contract/` git submodule, pinned to `v1.0.0`.
 | GET    | `/admin/cert-configs/{configVersion}`               | shipped    |
 | POST   | `/admin/cert-configs`                               | shipped    |
 | POST   | `/admin/cert-configs/{configVersion}/activate`      | shipped    |
+| GET    | `/admin/queue-stats?windowHours=24`                 | shipped    |
+
+`/admin/certifications` supports the filter params `tier`, `deviceId`,
+`configVersion`, `hsn`, `publicIp` (raw IP — server hashes), `from` and
+`to` (RFC 3339, compared against `completedAt`), and `queuedOnly=true`
+(only rows where `submittedAt - completedAt > 5min`). Responses include
+`queueDelaySeconds` per row (null for older-client payloads).
 
 ### Health
 

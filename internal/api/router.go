@@ -52,6 +52,7 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/admin/cert-configs/{version}", admin.GetCertConfig)
 			r.Post("/admin/cert-configs", admin.CreateCertConfig)
 			r.Post("/admin/cert-configs/{version}/activate", admin.ActivateCertConfig)
+			r.Get("/admin/queue-stats", admin.QueueStats)
 		})
 	}
 

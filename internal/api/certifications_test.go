@@ -387,6 +387,118 @@ func TestPostCertification_UnknownConfigVersion(t *testing.T) {
 	}
 }
 
+// Contract v1.1.0 timestamps round-trip when the client supplies them.
+func TestPostCertification_QueueTimestamps_RoundTrip(t *testing.T) {
+	env, cleanup := newCertEnv(t)
+	defer cleanup()
+
+	fix := loadCertFixture(t)
+	// completedAt is already in the fixture; submittedAt is 2 seconds later
+	// (fresh-publish case — no queue delay).
+	completed := "2026-05-06T18:37:46Z"
+	fix["completedAt"] = completed
+	fix["enqueuedAt"] = "2026-05-06T18:37:46Z"
+	fix["submittedAt"] = "2026-05-06T18:37:48Z"
+	resp := env.post(mustMarshal(t, fix), nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		got, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d (%s), want 201", resp.StatusCode, string(got))
+	}
+
+	cert, err := env.certs.Get(context.Background(), fixtureID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if cert.EnqueuedAt == nil || cert.SubmittedAt == nil {
+		t.Fatalf("expected both queue timestamps populated; got enqueued=%v submitted=%v",
+			cert.EnqueuedAt, cert.SubmittedAt)
+	}
+	delay := int64(cert.SubmittedAt.Sub(cert.CompletedAt).Seconds())
+	if delay < 0 || delay > 3 {
+		t.Errorf("queue delay: got %ds, want ~2s", delay)
+	}
+}
+
+// Older clients (no enqueuedAt/submittedAt) ingest cleanly with NULLs.
+func TestPostCertification_OlderClient_NoQueueTimestamps(t *testing.T) {
+	env, cleanup := newCertEnv(t)
+	defer cleanup()
+
+	fix := loadCertFixture(t)
+	delete(fix, "enqueuedAt")
+	delete(fix, "submittedAt")
+	resp := env.post(mustMarshal(t, fix), nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201", resp.StatusCode)
+	}
+	cert, _ := env.certs.Get(context.Background(), fixtureID)
+	if cert.EnqueuedAt != nil || cert.SubmittedAt != nil {
+		t.Errorf("older-client row should carry null timestamps; got enqueued=%v submitted=%v",
+			cert.EnqueuedAt, cert.SubmittedAt)
+	}
+}
+
+// Each of the four validation rules rejects with the named path.
+func TestPostCertification_QueueTimestampValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(map[string]any)
+		rule string
+	}{
+		{
+			name: "completedAt < startedAt",
+			mut: func(m map[string]any) {
+				m["startedAt"] = "2026-05-06T18:37:46Z"
+				m["completedAt"] = "2026-05-06T18:36:48Z"
+			},
+			rule: "completedAt_after_startedAt",
+		},
+		{
+			name: "submittedAt too far before completedAt",
+			mut: func(m map[string]any) {
+				m["completedAt"] = "2026-05-06T18:37:46Z"
+				m["submittedAt"] = "2026-05-06T18:00:00Z"
+			},
+			rule: "submittedAt_near_completedAt",
+		},
+		{
+			name: "enqueuedAt too far before completedAt",
+			mut: func(m map[string]any) {
+				m["completedAt"] = "2026-05-06T18:37:46Z"
+				m["enqueuedAt"] = "2026-05-06T18:00:00Z"
+			},
+			rule: "enqueuedAt_near_completedAt",
+		},
+		{
+			name: "submittedAt from the future",
+			mut: func(m map[string]any) {
+				m["submittedAt"] = "2099-01-01T00:00:00Z"
+			},
+			rule: "submittedAt_before_receivedAt",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, cleanup := newCertEnv(t)
+			defer cleanup()
+			fix := loadCertFixture(t)
+			tc.mut(fix)
+			resp := env.post(mustMarshal(t, fix), nil)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				got, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status: got %d (%s), want 400", resp.StatusCode, string(got))
+			}
+			body, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(body), tc.rule) {
+				t.Errorf("error body should name rule %q; got: %s", tc.rule, string(body))
+			}
+		})
+	}
+}
+
 // Validation error on missing required field → 400 with details.
 func TestPostCertification_MissingCertID(t *testing.T) {
 	env, cleanup := newCertEnv(t)

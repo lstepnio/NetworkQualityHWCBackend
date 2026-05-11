@@ -47,7 +47,9 @@ type Certification struct {
 	DownloadSteadyMbps *float64
 	UploadSteadyMbps   *float64
 	LatencyMedianMs    *int
-	PublicIP           *string // Stored as the peppered SHA-256 hash; admin API hashes query inputs to match.
+	PublicIP           *string    // Stored as the peppered SHA-256 hash; admin API hashes query inputs to match.
+	EnqueuedAt         *time.Time // Optional, contract v1.1.0+; nil for older clients.
+	SubmittedAt        *time.Time // Optional, contract v1.1.0+; nil for older clients.
 	Payload            []byte
 	PayloadHash        string
 	ReceivedAt         time.Time
@@ -76,7 +78,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
-			public_ip,
+			public_ip, enqueued_at, submitted_at,
 			payload, payload_hash
 		) values (
 			$1, $2, $3, $4, $5,
@@ -84,8 +86,8 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			$10, $11, $12,
 			$13, $14, $15, $16,
 			$17, $18, $19,
-			$20,
-			$21::jsonb, $22
+			$20, $21, $22,
+			$23::jsonb, $24
 		)
 		on conflict (certification_id) do nothing
 		returning certification_id
@@ -97,7 +99,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 		c.AchievedTier, c.MarginalMetric, c.Transport,
 		c.WidevineLevel, c.HDRTypes, c.DisplayMaxHeight, c.ThermalStatus,
 		c.DownloadSteadyMbps, c.UploadSteadyMbps, c.LatencyMedianMs,
-		c.PublicIP,
+		c.PublicIP, c.EnqueuedAt, c.SubmittedAt,
 		string(c.Payload), c.PayloadHash,
 	).Scan(&id)
 	if err == nil {
@@ -121,6 +123,10 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 
 // ListFilter narrows /admin/certifications results. Zero values are ignored.
 // Limit is capped to 200 server-side; Offset is unbounded.
+//
+// From/To filter on completed_at (cert run time), not received_at — a
+// 3-day-old run that drained from the publish queue 5 min ago belongs in
+// its actual chronological slot, not at the top of the feed.
 type ListFilter struct {
 	Tier          string
 	DeviceID      string
@@ -129,8 +135,13 @@ type ListFilter struct {
 	PublicIPHash  string // exact match against the (hashed) public_ip column — caller hashes
 	From          *time.Time
 	To            *time.Time
-	Limit         int
-	Offset        int
+	// QueuedOnly returns only rows whose submitted_at - completed_at is
+	// more than 5 minutes. Implies submitted_at is not null, so older-client
+	// rows (without submitted_at) never match. Useful for investigating
+	// publish-API outages.
+	QueuedOnly bool
+	Limit      int
+	Offset     int
 }
 
 // ListSummary is the row shape returned by List — hot-path columns only,
@@ -153,6 +164,8 @@ type ListSummary struct {
 	UploadSteadyMbps   *float64
 	LatencyMedianMs    *int
 	PublicIP           *string // hashed
+	EnqueuedAt         *time.Time
+	SubmittedAt        *time.Time
 	ReceivedAt         time.Time
 }
 
@@ -186,10 +199,16 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 		add("public_ip = $%d", f.PublicIPHash)
 	}
 	if f.From != nil {
-		add("received_at >= $%d", *f.From)
+		add("completed_at >= $%d", *f.From)
 	}
 	if f.To != nil {
-		add("received_at < $%d", *f.To)
+		add("completed_at < $%d", *f.To)
+	}
+	if f.QueuedOnly {
+		// >5 minutes between cert running and the row landing means the
+		// publish queue actually held it; sub-second drains aren't useful
+		// to surface.
+		conds = append(conds, "submitted_at is not null and submitted_at - completed_at > interval '5 minutes'")
 	}
 
 	args = append(args, f.Limit, f.Offset)
@@ -200,11 +219,11 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
-			public_ip, received_at,
+			public_ip, enqueued_at, submitted_at, received_at,
 			count(*) over () as total
 		from certifications
 		where %s
-		order by received_at desc
+		order by completed_at desc
 		limit $%d offset $%d
 	`, strings.Join(conds, " and "), len(args)-1, len(args))
 
@@ -224,7 +243,7 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			&c.AchievedTier, &c.MarginalMetric, &c.Transport,
 			&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 			&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
-			&c.PublicIP, &c.ReceivedAt, &total,
+			&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt, &c.ReceivedAt, &total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("List scan: %w", err)
 		}
@@ -236,6 +255,41 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 	return out, total, nil
 }
 
+// QueueStatsResult is the aggregate over a recent window of certifications
+// where the client supplied a submitted_at. All three percentile values
+// are seconds.
+type QueueStatsResult struct {
+	SampleSize    int
+	MedianSeconds *float64
+	P95Seconds    *float64
+	MaxSeconds    *float64
+}
+
+// QueueStats computes the queue-delay distribution (submitted_at - completed_at)
+// over rows whose completed_at falls within the trailing window. Only rows
+// with a non-null submitted_at are included; otherwise older-client payloads
+// would be counted as "zero delay" and skew the percentiles.
+func (s *CertificationsStore) QueueStats(ctx context.Context, windowHours int) (QueueStatsResult, error) {
+	const q = `
+		select
+			count(*) as n,
+			extract(epoch from percentile_cont(0.5)  within group (order by submitted_at - completed_at)) as median,
+			extract(epoch from percentile_cont(0.95) within group (order by submitted_at - completed_at)) as p95,
+			extract(epoch from max(submitted_at - completed_at)) as max
+		from certifications
+		where submitted_at is not null
+		  and completed_at >= now() - make_interval(hours => $1)
+	`
+	var r QueueStatsResult
+	err := s.pool.QueryRow(ctx, q, windowHours).Scan(
+		&r.SampleSize, &r.MedianSeconds, &r.P95Seconds, &r.MaxSeconds,
+	)
+	if err != nil {
+		return QueueStatsResult{}, fmt.Errorf("QueueStats: %w", err)
+	}
+	return r, nil
+}
+
 func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certification, error) {
 	const q = `
 		select
@@ -244,7 +298,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
-			public_ip,
+			public_ip, enqueued_at, submitted_at,
 			payload::text, payload_hash, received_at
 		from certifications
 		where certification_id = $1
@@ -257,7 +311,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 		&c.AchievedTier, &c.MarginalMetric, &c.Transport,
 		&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 		&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
-		&c.PublicIP,
+		&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt,
 		&payloadStr, &c.PayloadHash, &c.ReceivedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

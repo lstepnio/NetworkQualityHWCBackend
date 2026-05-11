@@ -153,6 +153,22 @@ func buildCertification(parsed map[string]any, raw []byte) (*store.Certification
 		return t
 	}
 
+	// Optional timestamp: returns (nil, ok=true) when absent. ok=false on
+	// presence-but-malformed; the rule name surfaces in the 400 body so
+	// the client logs are useful.
+	optTime := func(rulePath string, parts ...string) (*time.Time, bool) {
+		s := getString(parsed, parts...)
+		if s == "" {
+			return nil, true
+		}
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			problems = append(problems, ErrorDetail{Path: rulePath, Msg: "must be RFC 3339 timestamp"})
+			return nil, false
+		}
+		return &t, true
+	}
+
 	certID := mustUUID("certificationId", "certificationId")
 	deviceID := mustUUID("deviceId", "deviceId")
 	schemaVer, ok := getInt(parsed, "schemaVersion")
@@ -162,9 +178,45 @@ func buildCertification(parsed map[string]any, raw []byte) (*store.Certification
 	configVer := mustString("configVersion", "configVersion")
 	startedAt := mustTime("startedAt", "startedAt")
 	completedAt := mustTime("completedAt", "completedAt")
+	enqueuedAt, _ := optTime("enqueuedAt", "enqueuedAt") // contract v1.1.0+, optional
+	submittedAt, _ := optTime("submittedAt", "submittedAt")
 
 	transport := mustString("network.transport", "network", "transport")
 	achievedTier := mustString("result.achievedTier", "result", "achievedTier")
+
+	// Cross-field rules. Each one is named so a 400 body's `details[*].path`
+	// tells the client exactly which assertion failed. Clock skew on the
+	// STB is real (no NTP sometimes), so a 60s tolerance keeps near-misses
+	// from rejecting otherwise-valid payloads.
+	const skew = 60 * time.Second
+	if !startedAt.IsZero() && !completedAt.IsZero() && completedAt.Before(startedAt) {
+		problems = append(problems, ErrorDetail{
+			Path: "completedAt_after_startedAt",
+			Msg:  "completedAt must be >= startedAt",
+		})
+	}
+	if submittedAt != nil && !completedAt.IsZero() && submittedAt.Before(completedAt.Add(-skew)) {
+		problems = append(problems, ErrorDetail{
+			Path: "submittedAt_near_completedAt",
+			Msg:  "submittedAt must be >= completedAt - 60s",
+		})
+	}
+	if enqueuedAt != nil && !completedAt.IsZero() && enqueuedAt.Before(completedAt.Add(-skew)) {
+		problems = append(problems, ErrorDetail{
+			Path: "enqueuedAt_near_completedAt",
+			Msg:  "enqueuedAt must be >= completedAt - 60s",
+		})
+	}
+	// receivedAt is effectively "right now" — the row hasn't been inserted
+	// yet, so we compare against the wall clock. The client can't be from
+	// the future modulo skew tolerance.
+	receivedAt := time.Now().UTC()
+	if submittedAt != nil && submittedAt.After(receivedAt.Add(skew)) {
+		problems = append(problems, ErrorDetail{
+			Path: "submittedAt_before_receivedAt",
+			Msg:  "submittedAt must be <= now + 60s (request can't be from the future)",
+		})
+	}
 
 	if len(problems) > 0 {
 		return nil, problems
@@ -190,6 +242,8 @@ func buildCertification(parsed map[string]any, raw []byte) (*store.Certification
 		DownloadSteadyMbps: floatPtr(getNumber(parsed, "metrics", "download", "steadyMbps")),
 		UploadSteadyMbps:   floatPtr(getNumber(parsed, "metrics", "upload", "steadyMbps")),
 		LatencyMedianMs:    intPtrOrNil(getInt(parsed, "metrics", "latency", "medianMs")),
+		EnqueuedAt:         enqueuedAt,
+		SubmittedAt:        submittedAt,
 	}
 	return cert, nil
 }
