@@ -69,11 +69,8 @@ type adminCertSummary struct {
 	DownloadSteadyMbps *float64   `json:"downloadSteadyMbps,omitempty"`
 	UploadSteadyMbps   *float64   `json:"uploadSteadyMbps,omitempty"`
 	LatencyMedianMs    *int       `json:"latencyMedianMs,omitempty"`
-	PublicIPHash       *string    `json:"publicIpHash,omitempty"`     // STB-reported, hashed
-	RequestIPHash      *string    `json:"requestIpHash,omitempty"`    // server-observed at POST time, hashed. Same hash family as publicIpHash — they'll match when the STB and the request landed on the same egress IP.
-	IspAsn             *int       `json:"ispAsn,omitempty"`           // Cymru lookup of the request source IP
-	IspName            *string    `json:"ispName,omitempty"`          // Cymru's registered name for the ASN
-	EnqueuedAt         *time.Time `json:"enqueuedAt,omitempty"`       // contract v1.1.0+; null for older clients
+	PublicIPHash       *string    `json:"publicIpHash,omitempty"` // never the raw IP — already redacted
+	EnqueuedAt         *time.Time `json:"enqueuedAt,omitempty"`   // contract v1.1.0+; null for older clients
 	SubmittedAt        *time.Time `json:"submittedAt,omitempty"`
 	QueueDelaySeconds  *int64     `json:"queueDelaySeconds,omitempty"` // submittedAt - completedAt; null when submittedAt is null
 	ReceivedAt         time.Time  `json:"receivedAt"`
@@ -102,9 +99,6 @@ func toSummary(s store.ListSummary) adminCertSummary {
 		UploadSteadyMbps:   s.UploadSteadyMbps,
 		LatencyMedianMs:    s.LatencyMedianMs,
 		PublicIPHash:       s.PublicIP,
-		RequestIPHash:      s.RequestIPHash,
-		IspAsn:             s.ISPAsn,
-		IspName:            s.ISPName,
 		EnqueuedAt:         s.EnqueuedAt,
 		SubmittedAt:        s.SubmittedAt,
 		QueueDelaySeconds:  queueDelay(s.CompletedAt, s.SubmittedAt),
@@ -211,9 +205,6 @@ func (h *AdminHandler) GetCertification(w http.ResponseWriter, r *http.Request) 
 			PublicIP:           c.PublicIP,
 			EnqueuedAt:         c.EnqueuedAt,
 			SubmittedAt:        c.SubmittedAt,
-			RequestIPHash:      c.RequestIPHash,
-			ISPAsn:             c.ISPAsn,
-			ISPName:            c.ISPName,
 			ReceivedAt:         c.ReceivedAt,
 		}),
 		"payloadHash": c.PayloadHash,
