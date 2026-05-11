@@ -183,8 +183,11 @@ func TestPostCertification_HashConflict(t *testing.T) {
 	first := env.post(mustMarshal(t, original), nil)
 	first.Body.Close()
 
+	// Mutate a content field whose change is invisible to cross-field
+	// validation but flips the payload hash — same certificationId, different
+	// body bytes, server should detect via payload_hash mismatch.
 	mutated := loadCertFixture(t)
-	mutated["completedAt"] = "2099-12-31T23:59:59Z"
+	mutated["metrics"].(map[string]any)["download"].(map[string]any)["steadyMbps"] = 999.9
 	resp := env.post(mustMarshal(t, mutated), nil)
 	defer resp.Body.Close()
 
