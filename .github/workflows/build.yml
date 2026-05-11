@@ -20,6 +20,21 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Verify contract pin is on an exact tag
+        # Both consumers (backend + android) must pin contract/ to a clean
+        # tag — never a SHA past a tag. Drift here causes silent wire-format
+        # disagreements at runtime (JSON deserializers ignore unknown fields).
+        # `actions/checkout submodules: recursive` doesn't fetch the
+        # submodule's tags, so we have to before `describe --tags` works.
+        run: |
+          git -C contract fetch --tags origin 2>/dev/null || true
+          PIN=$(git -C contract describe --tags --exact-match 2>/dev/null) || {
+            echo "::error::contract submodule is not at an exact tag"
+            echo "current: $(git -C contract describe --tags --always)"
+            exit 1
+          }
+          echo "Contract pinned at: $PIN"
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
