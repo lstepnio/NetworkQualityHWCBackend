@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/api"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
@@ -29,6 +30,7 @@ const (
 
 type certEnv struct {
 	router  http.Handler
+	pool    *pgxpool.Pool
 	configs *store.CertConfigStore
 	certs   *store.CertificationsStore
 }
@@ -71,13 +73,14 @@ func newCertEnv(t *testing.T) (*certEnv, func()) {
 
 	router := api.NewRouter(api.Deps{
 		Logger:         logger,
+		DB:             pool,
 		CertConfigs:    cfgStore,
 		Certifications: certStore,
 		AppVersions:    store.NewAppVersionStore(pool),
 		PII:            pii.NewHasher(pilotPepper),
 		AdminToken:     testAdminToken,
 	})
-	return &certEnv{router: router, configs: cfgStore, certs: certStore}, func() {
+	return &certEnv{router: router, pool: pool, configs: cfgStore, certs: certStore}, func() {
 		pool.Close()
 		stopPG()
 	}

@@ -1,16 +1,20 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
 )
 
 type Deps struct {
 	Logger         *slog.Logger
+	DB             *pgxpool.Pool // for /healthz; may be nil in tests that don't need DB-backed health
 	CertConfigs    *store.CertConfigStore
 	Certifications *store.CertificationsStore
 	AppVersions    *store.AppVersionStore
@@ -66,7 +70,23 @@ func NewRouter(d Deps) http.Handler {
 		})
 	}
 
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	// /healthz pings the DB so orchestrators / load balancers can route
+	// away from instances that are alive-but-broken. 500ms budget keeps
+	// the probe cheap; on miss we return 503 with a structured body so
+	// the alert text in logs is actionable.
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if d.DB == nil {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		defer cancel()
+		if err := d.DB.Ping(ctx); err != nil {
+			d.Logger.Warn("healthz: db ping failed", slog.String("err", err.Error()))
+			writeError(w, http.StatusServiceUnavailable, "db unreachable")
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
