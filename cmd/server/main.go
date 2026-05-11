@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/api"
-	"github.com/lstepnio/NetworkQualityHWCBackend/internal/asn"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/config"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
@@ -47,11 +46,6 @@ func main() {
 	appVersionStore := store.NewAppVersionStore(pool)
 	hasher := pii.NewHasher(env.PIIPepper)
 
-	var asnLookup asn.Lookup = asn.Noop{}
-	if env.ASNLookupEnabled {
-		asnLookup = asn.NewCymru(env.ASNLookupTimeout)
-	}
-
 	if env.DevSeed {
 		if err := store.SeedIfEmpty(ctx, cfgStore, env.SeedPath, logger); err != nil {
 			logger.Error("seed", slog.String("err", err.Error()))
@@ -65,7 +59,6 @@ func main() {
 		Certifications: certStore,
 		AppVersions:    appVersionStore,
 		PII:            hasher,
-		ASN:            asnLookup,
 		AdminToken:     env.AdminToken,
 	})
 
