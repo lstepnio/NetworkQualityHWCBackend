@@ -13,6 +13,7 @@ type Deps struct {
 	Logger         *slog.Logger
 	CertConfigs    *store.CertConfigStore
 	Certifications *store.CertificationsStore
+	AppVersions    *store.AppVersionStore
 	PII            *pii.Hasher
 	AdminToken     string
 }
@@ -39,10 +40,15 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/v1/certifications", certs.Post)
 			r.Get("/v1/certifications/{id}", certs.Get)
 		}
+
+		if d.AppVersions != nil {
+			av := NewAppVersionHandler(d.AppVersions)
+			r.Get("/v1/app/version", av.Get)
+		}
 	})
 
-	if d.Certifications != nil && d.CertConfigs != nil && d.PII != nil {
-		admin := NewAdminHandler(d.Certifications, d.CertConfigs, d.PII)
+	if d.Certifications != nil && d.CertConfigs != nil && d.AppVersions != nil && d.PII != nil {
+		admin := NewAdminHandler(d.Certifications, d.CertConfigs, d.AppVersions, d.PII)
 		r.Group(func(r chi.Router) {
 			r.Use(adminBearer(d.AdminToken))
 			r.Use(maxBodyBytes)
@@ -52,6 +58,10 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/admin/cert-configs/{version}", admin.GetCertConfig)
 			r.Post("/admin/cert-configs", admin.CreateCertConfig)
 			r.Post("/admin/cert-configs/{version}/activate", admin.ActivateCertConfig)
+			r.Get("/admin/app-versions", admin.ListAppVersions)
+			r.Get("/admin/app-versions/{versionCode}", admin.GetAppVersion)
+			r.Post("/admin/app-versions", admin.CreateAppVersion)
+			r.Post("/admin/app-versions/{versionCode}/activate", admin.ActivateAppVersion)
 			r.Get("/admin/queue-stats", admin.QueueStats)
 		})
 	}

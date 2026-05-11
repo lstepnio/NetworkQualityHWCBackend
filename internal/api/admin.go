@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -14,13 +15,16 @@ import (
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
 )
 
+var sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // AdminHandler exposes /admin/* endpoints for the dashboard. The shape of
 // these endpoints is internal to this codebase + dashboard pair (no contract
 // repo); breaking changes are coordinated via PR.
 type AdminHandler struct {
-	certs   *store.CertificationsStore
-	configs *store.CertConfigStore
-	pii     publicIPHasher
+	certs       *store.CertificationsStore
+	configs     *store.CertConfigStore
+	appVersions *store.AppVersionStore
+	pii         publicIPHasher
 }
 
 // publicIPHasher is the small slice of *pii.Hasher we need — accept any
@@ -30,8 +34,13 @@ type publicIPHasher interface {
 	Hash(value string) string
 }
 
-func NewAdminHandler(certs *store.CertificationsStore, configs *store.CertConfigStore, hasher publicIPHasher) *AdminHandler {
-	return &AdminHandler{certs: certs, configs: configs, pii: hasher}
+func NewAdminHandler(
+	certs *store.CertificationsStore,
+	configs *store.CertConfigStore,
+	appVersions *store.AppVersionStore,
+	hasher publicIPHasher,
+) *AdminHandler {
+	return &AdminHandler{certs: certs, configs: configs, appVersions: appVersions, pii: hasher}
 }
 
 // adminListResponse wraps a paginated list. items is always an array (never
@@ -421,6 +430,261 @@ func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 	}
 
 	return problems
+}
+
+// --- App-version-manifest admin endpoints -------------------------------
+
+type adminAppVersionSummary struct {
+	LatestVersionCode      int        `json:"latestVersionCode"`
+	LatestVersionName      string     `json:"latestVersionName"`
+	MinRequiredVersionCode int        `json:"minRequiredVersionCode"`
+	PublishedAt            *time.Time `json:"publishedAt,omitempty"`
+	IsActive               bool       `json:"isActive"`
+	CreatedAt              time.Time  `json:"createdAt"`
+	Document               any        `json:"document,omitempty"`
+}
+
+func (h *AdminHandler) ListAppVersions(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.appVersions.ListAll(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list error")
+		return
+	}
+	includeDoc := r.URL.Query().Get("includeDocument") == "true"
+	items := make([]adminAppVersionSummary, 0, len(rows))
+	for _, c := range rows {
+		s := adminAppVersionSummary{
+			LatestVersionCode:      c.LatestVersionCode,
+			LatestVersionName:      c.LatestVersionName,
+			MinRequiredVersionCode: c.MinRequiredVersionCode,
+			PublishedAt:            c.PublishedAt,
+			IsActive:               c.IsActive,
+			CreatedAt:              c.CreatedAt,
+		}
+		if includeDoc {
+			var doc any
+			_ = json.Unmarshal(c.Document, &doc)
+			s.Document = doc
+		}
+		items = append(items, s)
+	}
+	writeJSONValue(w, http.StatusOK, adminListResponse{
+		Items:  items,
+		Total:  len(items),
+		Limit:  len(items),
+		Offset: 0,
+	})
+}
+
+func (h *AdminHandler) GetAppVersion(w http.ResponseWriter, r *http.Request) {
+	code, err := strconv.Atoi(chi.URLParam(r, "versionCode"))
+	if err != nil || code < 1 {
+		writeError(w, http.StatusBadRequest, "versionCode must be a positive integer")
+		return
+	}
+	c, err := h.appVersions.GetByVersionCode(r.Context(), code)
+	if errors.Is(err, store.ErrAppVersionNotFound) {
+		writeError(w, http.StatusNotFound, "no such app version")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	var doc any
+	_ = json.Unmarshal(c.Document, &doc)
+	writeJSONValue(w, http.StatusOK, adminAppVersionSummary{
+		LatestVersionCode:      c.LatestVersionCode,
+		LatestVersionName:      c.LatestVersionName,
+		MinRequiredVersionCode: c.MinRequiredVersionCode,
+		PublishedAt:            c.PublishedAt,
+		IsActive:               c.IsActive,
+		CreatedAt:              c.CreatedAt,
+		Document:               doc,
+	})
+}
+
+func (h *AdminHandler) CreateAppVersion(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload exceeds 256 KB")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "could not read body: "+err.Error())
+		return
+	}
+	var doc map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	problems, parsed := validateAppVersionManifest(doc)
+	if len(problems) > 0 {
+		writeError(w, http.StatusBadRequest, "validation failed", problems...)
+		return
+	}
+
+	canonical, err := json.Marshal(doc)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "re-serialize failed")
+		return
+	}
+
+	if err := h.appVersions.Insert(
+		r.Context(),
+		parsed.versionCode, parsed.versionName, parsed.minRequiredCode,
+		parsed.publishedAt, canonical,
+	); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "latestVersionCode already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+
+	c, err := h.appVersions.GetByVersionCode(r.Context(), parsed.versionCode)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error after insert")
+		return
+	}
+	var docOut any
+	_ = json.Unmarshal(c.Document, &docOut)
+	writeJSONValue(w, http.StatusCreated, adminAppVersionSummary{
+		LatestVersionCode:      c.LatestVersionCode,
+		LatestVersionName:      c.LatestVersionName,
+		MinRequiredVersionCode: c.MinRequiredVersionCode,
+		PublishedAt:            c.PublishedAt,
+		IsActive:               c.IsActive,
+		CreatedAt:              c.CreatedAt,
+		Document:               docOut,
+	})
+}
+
+func (h *AdminHandler) ActivateAppVersion(w http.ResponseWriter, r *http.Request) {
+	code, err := strconv.Atoi(chi.URLParam(r, "versionCode"))
+	if err != nil || code < 1 {
+		writeError(w, http.StatusBadRequest, "versionCode must be a positive integer")
+		return
+	}
+	if err := h.appVersions.Activate(r.Context(), code); err != nil {
+		if errors.Is(err, store.ErrAppVersionNotFound) {
+			writeError(w, http.StatusNotFound, "no such app version")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	c, err := h.appVersions.GetByVersionCode(r.Context(), code)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error after activate")
+		return
+	}
+	var docOut any
+	_ = json.Unmarshal(c.Document, &docOut)
+	writeJSONValue(w, http.StatusOK, adminAppVersionSummary{
+		LatestVersionCode:      c.LatestVersionCode,
+		LatestVersionName:      c.LatestVersionName,
+		MinRequiredVersionCode: c.MinRequiredVersionCode,
+		PublishedAt:            c.PublishedAt,
+		IsActive:               c.IsActive,
+		CreatedAt:              c.CreatedAt,
+		Document:               docOut,
+	})
+}
+
+type parsedAppVersionEnvelope struct {
+	versionCode     int
+	versionName     string
+	minRequiredCode int
+	publishedAt     *time.Time
+}
+
+// validateAppVersionManifest enforces the schema constraints declared in
+// the contract's AppVersionManifest (v1.2.0): required scalars, the SHA-256
+// regex, monotonic minRequired <= latest, https-or-http apkUrl. The dashboard
+// will eventually do field-level form validation; this surface is the
+// authoritative bouncer.
+func validateAppVersionManifest(doc map[string]any) ([]ErrorDetail, parsedAppVersionEnvelope) {
+	var problems []ErrorDetail
+	var out parsedAppVersionEnvelope
+
+	mustInt := func(path string) (int, bool) {
+		n, ok := doc[path].(json.Number)
+		if !ok {
+			problems = append(problems, ErrorDetail{Path: path, Msg: "required integer"})
+			return 0, false
+		}
+		i, err := n.Int64()
+		if err != nil || i < 1 {
+			problems = append(problems, ErrorDetail{Path: path, Msg: "must be integer >= 1"})
+			return 0, false
+		}
+		return int(i), true
+	}
+	mustString := func(path string) string {
+		s, _ := doc[path].(string)
+		if s == "" {
+			problems = append(problems, ErrorDetail{Path: path, Msg: "required, non-empty string"})
+		}
+		return s
+	}
+	mustSha := func(path string) {
+		s, _ := doc[path].(string)
+		if !sha256Re.MatchString(s) {
+			problems = append(problems, ErrorDetail{Path: path, Msg: "must match ^[0-9a-f]{64}$"})
+		}
+	}
+
+	if _, ok := mustInt("schemaVersion"); !ok {
+		_ = ok
+	}
+	out.versionName = mustString("latestVersionName")
+	lvc, lvcOk := mustInt("latestVersionCode")
+	mrc, mrcOk := mustInt("minRequiredVersionCode")
+	if lvcOk && mrcOk && mrc > lvc {
+		problems = append(problems, ErrorDetail{
+			Path: "minRequiredVersionCode",
+			Msg:  "must be <= latestVersionCode",
+		})
+	}
+	out.versionCode = lvc
+	out.minRequiredCode = mrc
+
+	if u := mustString("apkUrl"); u != "" {
+		// Accept http/https — production policy is HTTPS but staging/dev
+		// often uses plain HTTP. The client side enforces HTTPS in release
+		// builds via the network security config.
+		if len(u) < 7 || (u[:7] != "http://" && (len(u) < 8 || u[:8] != "https://")) {
+			problems = append(problems, ErrorDetail{Path: "apkUrl", Msg: "must be an http(s) URL"})
+		}
+	}
+
+	if n, ok := doc["apkSizeBytes"].(json.Number); ok {
+		if i, err := n.Int64(); err != nil || i < 1 {
+			problems = append(problems, ErrorDetail{Path: "apkSizeBytes", Msg: "must be integer >= 1"})
+		}
+	} else {
+		problems = append(problems, ErrorDetail{Path: "apkSizeBytes", Msg: "required integer"})
+	}
+
+	mustSha("apkSha256")
+	mustSha("signingCertSha256")
+
+	if v, ok := doc["publishedAt"].(string); ok && v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err != nil {
+			problems = append(problems, ErrorDetail{Path: "publishedAt", Msg: "must be RFC 3339 timestamp"})
+		} else {
+			out.publishedAt = &t
+		}
+	}
+
+	return problems, out
 }
 
 func atoiOr(s string, def int) int {

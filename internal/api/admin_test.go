@@ -73,6 +73,7 @@ func TestAdmin_DisabledWhenTokenEmpty(t *testing.T) {
 		Logger:         logger,
 		CertConfigs:    store.NewCertConfigStore(pool),
 		Certifications: store.NewCertificationsStore(pool),
+		AppVersions:    store.NewAppVersionStore(pool),
 		PII:            pii.NewHasher(pilotPepper),
 		AdminToken:     "", // explicit: admin disabled
 	})

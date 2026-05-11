@@ -73,6 +73,7 @@ func newCertEnv(t *testing.T) (*certEnv, func()) {
 		Logger:         logger,
 		CertConfigs:    cfgStore,
 		Certifications: certStore,
+		AppVersions:    store.NewAppVersionStore(pool),
 		PII:            pii.NewHasher(pilotPepper),
 		AdminToken:     testAdminToken,
 	})

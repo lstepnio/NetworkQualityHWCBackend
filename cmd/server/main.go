@@ -43,6 +43,7 @@ func main() {
 
 	cfgStore := store.NewCertConfigStore(pool)
 	certStore := store.NewCertificationsStore(pool)
+	appVersionStore := store.NewAppVersionStore(pool)
 	hasher := pii.NewHasher(env.PIIPepper)
 
 	if env.DevSeed {
@@ -56,6 +57,7 @@ func main() {
 		Logger:         logger,
 		CertConfigs:    cfgStore,
 		Certifications: certStore,
+		AppVersions:    appVersionStore,
 		PII:            hasher,
 		AdminToken:     env.AdminToken,
 	})
