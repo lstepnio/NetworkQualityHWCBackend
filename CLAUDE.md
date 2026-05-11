@@ -17,7 +17,7 @@ Postgres-backed. `chi` router, `pgx/v5`, `golang-migrate`, `kin-openapi` for run
 
 This repo is one of four in the FisionTV+ system. All checked out under `/Users/lukasz.stepniowski/Development/`:
 
-- **contract** — `fisiontv-cert-contract` — OpenAPI 3.1 + SPEC.md. Vendored here as the `contract/` git submodule, **pinned to an exact tag** (currently `v1.2.0`). Backend + android pins must match.
+- **contract** — `fisiontv-cert-contract` — OpenAPI 3.0.3 + SPEC.md. Vendored here as the `contract/` git submodule, **pinned to an exact tag** (currently `v1.2.1`). Backend + android pins must match.
 - **android** — `NetworkQualityHWC` — Kotlin/Compose STB client. Hits `/v1/*` for cert flow and self-updates via `/v1/app/version`.
 - **dashboard** — `NetworkQualityHWCDashboard` — SvelteKit 5 admin UI. Hits `/admin/*` for config + manifest management.
 
@@ -52,6 +52,17 @@ Admin token in dev: `dev-admin-token-change-me` (see `docker-compose.yml`). Alwa
 5. The release workflow builds and pushes a multi-arch image to GHCR.
 
 Tag-only releases (no code change) are valid when aligning a release train with another repo's bump — see the parent project memory.
+
+## Cross-repo status dashboard
+
+`./scripts/status.sh` prints a one-screen release-train snapshot:
+
+- Per-repo: branch, HEAD tag, dirty status, ↑↓ vs upstream, latest CI conclusion
+- Contract alignment: backend pin vs android pin vs latest tag (flags drift in red)
+- Open PRs across all four repos
+- Lab STB: installed versionCode/Name vs active manifest, sync status
+
+Resolves the sibling repos relative to its own location, so it survives a checkout move as long as the four-repo sibling layout (`~/Development/{NetworkQualityHWCBackend,NetworkQualityHWC,NetworkQualityHWCDashboard,fisiontv-cert-contract}`) stays intact. Recommended as the first command in any new session.
 
 ## Operational notes
 
