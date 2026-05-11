@@ -36,7 +36,7 @@ func appVersionHeaders(versionCode int) map[string]string {
 	return h
 }
 
-func TestAppVersion_NoActive_503(t *testing.T) {
+func TestAppVersion_NoActive_404(t *testing.T) {
 	env, cleanup := newCertEnv(t)
 	defer cleanup()
 
@@ -48,8 +48,8 @@ func TestAppVersion_NoActive_503(t *testing.T) {
 	env.router.ServeHTTP(w, r)
 	resp := w.Result()
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status: got %d, want 503 (no manifest yet)", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d, want 404 (no manifest yet)", resp.StatusCode)
 	}
 }
 
