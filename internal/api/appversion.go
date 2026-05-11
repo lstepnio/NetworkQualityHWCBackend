@@ -43,7 +43,10 @@ func (h *AppVersionHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	m, err := h.store.GetActive(r.Context())
 	if errors.Is(err, store.ErrNoActiveAppVersion) {
-		writeError(w, http.StatusServiceUnavailable, "no active app version manifest")
+		// Contract: 404 means "no manifest available". The client treats
+		// this as "no auto-update to offer; continue on installed version"
+		// rather than a server error.
+		writeError(w, http.StatusNotFound, "no active app version manifest")
 		return
 	}
 	if err != nil {
