@@ -50,6 +50,9 @@ type Certification struct {
 	PublicIP           *string    // Stored as the peppered SHA-256 hash; admin API hashes query inputs to match.
 	EnqueuedAt         *time.Time // Optional, contract v1.1.0+; nil for older clients.
 	SubmittedAt        *time.Time // Optional, contract v1.1.0+; nil for older clients.
+	RequestIPHash      *string    // Peppered SHA-256 of the request source IP captured at POST time. May differ from PublicIP when STUN reports a different egress IP than the request hit.
+	ISPAsn             *int       // Autonomous system number behind the request source IP, from Cymru lookup. Null on lookup failure or private IP.
+	ISPName            *string    // Cymru's registered name for the AS (e.g. "HOTWIRE-COMMUNICATIONS, US"). Null when the name lookup fails.
 	Payload            []byte
 	PayloadHash        string
 	ReceivedAt         time.Time
@@ -79,6 +82,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
 			public_ip, enqueued_at, submitted_at,
+			request_ip_hash, isp_asn, isp_name,
 			payload, payload_hash
 		) values (
 			$1, $2, $3, $4, $5,
@@ -87,7 +91,8 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			$13, $14, $15, $16,
 			$17, $18, $19,
 			$20, $21, $22,
-			$23::jsonb, $24
+			$23, $24, $25,
+			$26::jsonb, $27
 		)
 		on conflict (certification_id) do nothing
 		returning certification_id
@@ -100,6 +105,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 		c.WidevineLevel, c.HDRTypes, c.DisplayMaxHeight, c.ThermalStatus,
 		c.DownloadSteadyMbps, c.UploadSteadyMbps, c.LatencyMedianMs,
 		c.PublicIP, c.EnqueuedAt, c.SubmittedAt,
+		c.RequestIPHash, c.ISPAsn, c.ISPName,
 		string(c.Payload), c.PayloadHash,
 	).Scan(&id)
 	if err == nil {
@@ -166,6 +172,9 @@ type ListSummary struct {
 	PublicIP           *string // hashed
 	EnqueuedAt         *time.Time
 	SubmittedAt        *time.Time
+	RequestIPHash      *string // hashed; backend-derived
+	ISPAsn             *int    // backend-derived via Cymru
+	ISPName            *string // backend-derived via Cymru
 	ReceivedAt         time.Time
 }
 
@@ -219,7 +228,9 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
-			public_ip, enqueued_at, submitted_at, received_at,
+			public_ip, enqueued_at, submitted_at,
+			request_ip_hash, isp_asn, isp_name,
+			received_at,
 			count(*) over () as total
 		from certifications
 		where %s
@@ -243,7 +254,9 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			&c.AchievedTier, &c.MarginalMetric, &c.Transport,
 			&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 			&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
-			&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt, &c.ReceivedAt, &total,
+			&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt,
+			&c.RequestIPHash, &c.ISPAsn, &c.ISPName,
+			&c.ReceivedAt, &total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("List scan: %w", err)
 		}
@@ -299,6 +312,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
 			public_ip, enqueued_at, submitted_at,
+			request_ip_hash, isp_asn, isp_name,
 			payload::text, payload_hash, received_at
 		from certifications
 		where certification_id = $1
@@ -312,6 +326,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 		&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 		&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
 		&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt,
+		&c.RequestIPHash, &c.ISPAsn, &c.ISPName,
 		&payloadStr, &c.PayloadHash, &c.ReceivedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/lstepnio/NetworkQualityHWCBackend/internal/asn"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
 )
@@ -15,6 +16,7 @@ type Deps struct {
 	Certifications *store.CertificationsStore
 	AppVersions    *store.AppVersionStore
 	PII            *pii.Hasher
+	ASN            asn.Lookup
 	AdminToken     string
 }
 
@@ -36,7 +38,7 @@ func NewRouter(d Deps) http.Handler {
 		r.Get("/v1/cert-config", cc.Get)
 
 		if d.Certifications != nil && d.PII != nil {
-			certs := NewCertificationsHandler(d.Certifications, d.PII, d.Logger)
+			certs := NewCertificationsHandler(d.Certifications, d.PII, d.ASN, d.Logger)
 			r.Post("/v1/certifications", certs.Post)
 			r.Get("/v1/certifications/{id}", certs.Get)
 		}
