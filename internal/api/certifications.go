@@ -7,11 +7,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/lstepnio/NetworkQualityHWCBackend/internal/asn"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
 )
@@ -21,11 +24,15 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 type CertificationsHandler struct {
 	store  *store.CertificationsStore
 	pii    *pii.Hasher
+	asn    asn.Lookup
 	logger *slog.Logger
 }
 
-func NewCertificationsHandler(s *store.CertificationsStore, h *pii.Hasher, logger *slog.Logger) *CertificationsHandler {
-	return &CertificationsHandler{store: s, pii: h, logger: logger}
+func NewCertificationsHandler(s *store.CertificationsStore, h *pii.Hasher, a asn.Lookup, logger *slog.Logger) *CertificationsHandler {
+	if a == nil {
+		a = asn.Noop{}
+	}
+	return &CertificationsHandler{store: s, pii: h, asn: a, logger: logger}
 }
 
 func (h *CertificationsHandler) Post(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +77,30 @@ func (h *CertificationsHandler) Post(w http.ResponseWriter, r *http.Request) {
 	cert.HSN = strPtr(getString(parsed, "identity", "hsn"))
 	cert.EthernetMac = strPtr(getString(parsed, "identity", "ethernetMac"))
 	cert.PublicIP = strPtr(getString(parsed, "network", "publicIp"))
+
+	// Server-derived signals: request source IP (hashed) and the AS behind
+	// it. The STB also reports a publicIp via STUN; we trust the request-
+	// observed IP more (no STB-side spoofing surface) but store both so the
+	// dashboard can surface mismatches.
+	if remoteIP := extractRequestIP(r); remoteIP != "" {
+		hashed := h.pii.Hash(remoteIP)
+		cert.RequestIPHash = &hashed
+
+		// ASN lookup runs in-band with a 500ms budget (set by the
+		// constructor's Cymru timeout). Soft-failure: on any error we log
+		// at debug and leave isp_asn / isp_name null. The cert still
+		// lands.
+		if asn, name, err := h.asn.Lookup(r.Context(), remoteIP); err != nil {
+			h.logger.Debug("asn lookup failed",
+				slog.String("err", err.Error()),
+				slog.String("certification_id", cert.CertificationID))
+		} else if asn > 0 {
+			cert.ISPAsn = &asn
+			if name != "" {
+				cert.ISPName = &name
+			}
+		}
+	}
 
 	outcome, err := h.store.Upsert(r.Context(), cert)
 	if err != nil {
@@ -116,6 +147,29 @@ func writeJSON(w http.ResponseWriter, status int, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// extractRequestIP returns the source IP of the request — preferring the
+// first (client-most) hop in X-Forwarded-For when set by a trusted proxy,
+// falling back to r.RemoteAddr stripped of its port. Returns the empty
+// string when neither parses as a valid IP. The result is the input to
+// PII hashing + ASN lookup; we don't store it in plaintext anywhere.
+func extractRequestIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// XFF format: "client, proxy1, proxy2". Take the first hop.
+		first := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
+		if ip := net.ParseIP(first); ip != nil {
+			return ip.String()
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 // buildCertification extracts the structured fields needed for the database
