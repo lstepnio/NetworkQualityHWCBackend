@@ -16,6 +16,7 @@ and is consumed here as the `contract/` git submodule, pinned to `v1.0.0`.
 | GET    | `/v1/cert-config`                 | shipped    |
 | POST   | `/v1/certifications`              | shipped    |
 | GET    | `/v1/certifications/{id}`         | shipped    |
+| GET    | `/v1/app/version`                 | shipped    |
 
 ### Admin (`/admin/*`, shared-secret bearer, dashboard-facing)
 
@@ -27,6 +28,10 @@ and is consumed here as the `contract/` git submodule, pinned to `v1.0.0`.
 | GET    | `/admin/cert-configs/{configVersion}`               | shipped    |
 | POST   | `/admin/cert-configs`                               | shipped    |
 | POST   | `/admin/cert-configs/{configVersion}/activate`      | shipped    |
+| GET    | `/admin/app-versions`                               | shipped    |
+| GET    | `/admin/app-versions/{versionCode}`                 | shipped    |
+| POST   | `/admin/app-versions`                               | shipped    |
+| POST   | `/admin/app-versions/{versionCode}/activate`        | shipped    |
 | GET    | `/admin/queue-stats?windowHours=24`                 | shipped    |
 
 `/admin/certifications` supports the filter params `tier`, `deviceId`,
