@@ -76,7 +76,12 @@ type adminCertSummary struct {
 	EnqueuedAt         *time.Time `json:"enqueuedAt,omitempty"`   // contract v1.1.0+; null for older clients
 	SubmittedAt        *time.Time `json:"submittedAt,omitempty"`
 	QueueDelaySeconds  *int64     `json:"queueDelaySeconds,omitempty"` // submittedAt - completedAt; null when submittedAt is null
-	ReceivedAt         time.Time  `json:"receivedAt"`
+	// DNSPreferred trichotomy: null = no policy / pre-v2.3.0 client;
+	// false = at least one non-preferred DNS at cert time; true =
+	// all preferred (or vacuously empty). Drives the /certs list
+	// column + the ?dnsFlagged filter.
+	DNSPreferred *bool     `json:"dnsPreferred,omitempty"`
+	ReceivedAt   time.Time `json:"receivedAt"`
 }
 
 func toSummary(s store.ListSummary) adminCertSummary {
@@ -107,6 +112,7 @@ func toSummary(s store.ListSummary) adminCertSummary {
 		EnqueuedAt:         s.EnqueuedAt,
 		SubmittedAt:        s.SubmittedAt,
 		QueueDelaySeconds:  queueDelay(s.CompletedAt, s.SubmittedAt),
+		DNSPreferred:       s.DNSPreferred,
 		ReceivedAt:         s.ReceivedAt,
 	}
 }
@@ -134,6 +140,7 @@ func (h *AdminHandler) ListCertifications(w http.ResponseWriter, r *http.Request
 		ConfigVersion: q.Get("configVersion"),
 		HSN:           q.Get("hsn"),
 		QueuedOnly:    q.Get("queuedOnly") == "true",
+		DNSFlagged:    q.Get("dnsFlagged") == "true",
 		SortBy:        q.Get("sort"),
 		SortDir:       q.Get("dir"),
 		Limit:         atoiOr(q.Get("limit"), 50),
@@ -213,6 +220,7 @@ func (h *AdminHandler) GetCertification(w http.ResponseWriter, r *http.Request) 
 			PublicIP:           c.PublicIP,
 			EnqueuedAt:         c.EnqueuedAt,
 			SubmittedAt:        c.SubmittedAt,
+			DNSPreferred:       c.DNSPreferred,
 			ReceivedAt:         c.ReceivedAt,
 		}),
 		"payloadHash": c.PayloadHash,

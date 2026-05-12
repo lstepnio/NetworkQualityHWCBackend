@@ -47,12 +47,17 @@ type Certification struct {
 	DownloadSteadyMbps *float64
 	UploadSteadyMbps   *float64
 	LatencyMedianMs    *int
-	PublicIP           *string    // Stored as the peppered SHA-256 hash; admin API hashes query inputs to match.
+	PublicIP           *string    // Plaintext for rows ingested >= v0.7.11; legacy rows still carry the SHA-256 + pepper string.
 	EnqueuedAt         *time.Time // Optional, contract v1.1.0+; nil for older clients.
 	SubmittedAt        *time.Time // Optional, contract v1.1.0+; nil for older clients.
-	Payload            []byte
-	PayloadHash        string
-	ReceivedAt         time.Time
+	// DNSPreferred denormalizes payload.dnsAssessment.allPreferred so the
+	// list view can filter + render without parsing JSONB per row. NULL =
+	// no policy in effect (or pre-v2.3.0 client); FALSE = at least one
+	// non-preferred actual server; TRUE = all preferred (or vacuously empty).
+	DNSPreferred *bool
+	Payload      []byte
+	PayloadHash  string
+	ReceivedAt   time.Time
 }
 
 // UpsertResult tells the handler which HTTP status to return: Created for the
@@ -79,6 +84,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
 			public_ip, enqueued_at, submitted_at,
+			dns_preferred,
 			payload, payload_hash
 		) values (
 			$1, $2, $3, $4, $5,
@@ -87,7 +93,8 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 			$13, $14, $15, $16,
 			$17, $18, $19,
 			$20, $21, $22,
-			$23::jsonb, $24
+			$23,
+			$24::jsonb, $25
 		)
 		on conflict (certification_id) do nothing
 		returning certification_id
@@ -100,6 +107,7 @@ func (s *CertificationsStore) Upsert(ctx context.Context, c *Certification) (Ups
 		c.WidevineLevel, c.HDRTypes, c.DisplayMaxHeight, c.ThermalStatus,
 		c.DownloadSteadyMbps, c.UploadSteadyMbps, c.LatencyMedianMs,
 		c.PublicIP, c.EnqueuedAt, c.SubmittedAt,
+		c.DNSPreferred,
 		string(c.Payload), c.PayloadHash,
 	).Scan(&id)
 	if err == nil {
@@ -140,6 +148,11 @@ type ListFilter struct {
 	// rows (without submitted_at) never match. Useful for investigating
 	// publish-API outages.
 	QueuedOnly bool
+	// DNSFlagged returns only rows with dns_preferred = false (at least
+	// one non-preferred actual DNS server at cert time). Operator-oriented
+	// filter; the success state (TRUE) and the no-policy state (NULL) are
+	// both excluded.
+	DNSFlagged bool
 	// SortBy is a whitelisted column key. Empty/unknown → default
 	// ordering (completed_at). See sortColumn() for the allowed set.
 	SortBy string
@@ -208,10 +221,13 @@ type ListSummary struct {
 	// older client didn't emit the field.
 	WifiRating  *string
 	WifiRssiDbm *int
-	PublicIP    *string // hashed
+	PublicIP    *string // plaintext for rows ingested >= v0.7.11; legacy rows still carry the SHA-256 string
 	EnqueuedAt  *time.Time
 	SubmittedAt *time.Time
-	ReceivedAt  time.Time
+	// DNSPreferred mirrors Certification.DNSPreferred — denormalized
+	// payload.dnsAssessment.allPreferred for filter + list-view efficiency.
+	DNSPreferred *bool
+	ReceivedAt   time.Time
 }
 
 func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSummary, int, error) {
@@ -255,6 +271,12 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 		// to surface.
 		conds = append(conds, "submitted_at is not null and submitted_at - completed_at > interval '5 minutes'")
 	}
+	if f.DNSFlagged {
+		// dns_preferred is a trichotomy (NULL / FALSE / TRUE); NULL =
+		// no-policy must NOT match — operators triaging "show me DNS
+		// issues" don't want pre-policy rows polluting the result.
+		conds = append(conds, "dns_preferred = false")
+	}
 
 	sortExpr, _ := sortColumn(f.SortBy)
 	dir := "desc"
@@ -272,7 +294,9 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
 			payload->'result'->'wifiLink'->>'rating' as wifi_rating,
 			(payload->'result'->'wifiLink'->>'rssiDbm')::int as wifi_rssi_dbm,
-			public_ip, enqueued_at, submitted_at, received_at,
+			public_ip, enqueued_at, submitted_at,
+			dns_preferred,
+			received_at,
 			count(*) over () as total
 		from certifications
 		where %s
@@ -297,7 +321,9 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 			&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
 			&c.WifiRating, &c.WifiRssiDbm,
-			&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt, &c.ReceivedAt, &total,
+			&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt,
+			&c.DNSPreferred,
+			&c.ReceivedAt, &total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("List scan: %w", err)
 		}
@@ -353,6 +379,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
 			public_ip, enqueued_at, submitted_at,
+			dns_preferred,
 			payload::text, payload_hash, received_at
 		from certifications
 		where certification_id = $1
@@ -366,6 +393,7 @@ func (s *CertificationsStore) Get(ctx context.Context, id string) (*Certificatio
 		&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 		&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
 		&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt,
+		&c.DNSPreferred,
 		&payloadStr, &c.PayloadHash, &c.ReceivedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
