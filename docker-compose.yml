@@ -34,6 +34,10 @@ services:
       DEV_SEED: "1"
       PII_PEPPER: dev-pepper-change-me
       ADMIN_TOKEN: dev-admin-token-change-me
+      # Shared secret for HMAC-SHA256 auth on /v1/*. Empty disables
+      # verification entirely (legacy-passthrough); non-empty enables
+      # observe-then-opt-in. V1_HMAC_REQUIRE=true makes it mandatory.
+      V1_HMAC_SECRET: dev-hmac-secret-change-me
     ports:
       - "8080:8080"
 

@@ -24,6 +24,13 @@ type Env struct {
 	DevSeed        bool
 	SeedPath       string
 	AdminToken     string
+	// V1HMACSecret enables HMAC-SHA256 verification on /v1/*. Empty disables
+	// it (legacy passthrough). In dev the variable is optional; in
+	// production it is required when V1HMACRequire is true.
+	V1HMACSecret string
+	// V1HMACRequire makes a valid HMAC header mandatory on /v1/*. Only flip
+	// this once the field fleet is on a HMAC-aware client build.
+	V1HMACRequire bool
 }
 
 // IsDev reports whether we're running in the developer-mode configuration
@@ -70,6 +77,8 @@ func Load() (Env, error) {
 		DevSeed:        os.Getenv("DEV_SEED") == "1",
 		SeedPath:       seed,
 		AdminToken:     os.Getenv("ADMIN_TOKEN"),
+		V1HMACSecret:   os.Getenv("V1_HMAC_SECRET"),
+		V1HMACRequire:  os.Getenv("V1_HMAC_REQUIRE") == "true",
 	}
 	if err := env.validateProductionSafety(); err != nil {
 		return Env{}, err
@@ -93,6 +102,9 @@ func (e Env) validateProductionSafety() error {
 	}
 	if e.PIIPepper == devPIIPepperDefault {
 		return fmt.Errorf("refusing to boot: PII_PEPPER is set to the dev default %q while APP_ENV=%q; set a real pepper", devPIIPepperDefault, e.AppEnv)
+	}
+	if e.V1HMACRequire && e.V1HMACSecret == "" {
+		return fmt.Errorf("refusing to boot: V1_HMAC_REQUIRE=true but V1_HMAC_SECRET is unset while APP_ENV=%q", e.AppEnv)
 	}
 	return nil
 }
