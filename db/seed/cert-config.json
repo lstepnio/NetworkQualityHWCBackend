@@ -11,8 +11,8 @@
     { "id": "nc",   "name": "North Carolina",   "host": "speedtestnc.gethotwired.com",   "port": 8080, "secure": true, "weight": 1.0 }
   ],
   "tests": {
-    "download": { "durationSec": 10, "parallel": 4, "perRequestBytes": 100000000, "warmupFraction": 0.33 },
-    "upload":   { "durationSec": 5,  "parallel": 2, "perRequestBytes": 50000000,  "warmupFraction": 0.33 },
+    "download": { "durationSec": 10, "parallel": 8,  "perRequestBytes": 100000000, "warmupFraction": 0.33 },
+    "upload":   { "durationSec": 5,  "parallel": 16, "perRequestBytes": 50000000,  "warmupFraction": 0.33 },
     "latency":  { "samples": 10, "timeoutMs": 2000 },
     "playback": {
       "manifestUrl": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd",
