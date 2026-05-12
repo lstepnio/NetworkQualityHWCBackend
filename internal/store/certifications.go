@@ -140,8 +140,46 @@ type ListFilter struct {
 	// rows (without submitted_at) never match. Useful for investigating
 	// publish-API outages.
 	QueuedOnly bool
-	Limit      int
-	Offset     int
+	// SortBy is a whitelisted column key. Empty/unknown → default
+	// ordering (completed_at). See sortColumn() for the allowed set.
+	SortBy string
+	// SortDir is "asc" or "desc". Empty/unknown → "desc". Always
+	// applied with `nulls last` so empty cells stay at the bottom.
+	SortDir string
+	Limit   int
+	Offset  int
+}
+
+// sortColumn maps the URL-facing sort key to its SQL expression.
+// Whitelisted so a malicious caller can't inject. Returns the column
+// expression and whether the key was recognized; unknown keys fall
+// back to completed_at.
+func sortColumn(key string) (string, bool) {
+	switch key {
+	case "", "completed":
+		return "completed_at", key != ""
+	case "received":
+		return "received_at", true
+	case "tier":
+		return "achieved_tier", true
+	case "download":
+		return "download_steady_mbps", true
+	case "upload":
+		return "upload_steady_mbps", true
+	case "latency":
+		return "latency_median_ms", true
+	case "wifi":
+		// Strongest signal sorts to the top in desc (least negative
+		// rssi). Casting from text → int because we extract from JSONB.
+		return "(payload->'result'->'wifiLink'->>'rssiDbm')::int", true
+	case "device":
+		return "device_id", true
+	case "config":
+		return "config_version", true
+	case "hsn":
+		return "hsn", true
+	}
+	return "completed_at", false
 }
 
 // ListSummary is the row shape returned by List — hot-path columns only,
@@ -163,10 +201,17 @@ type ListSummary struct {
 	DownloadSteadyMbps *float64
 	UploadSteadyMbps   *float64
 	LatencyMedianMs    *int
-	PublicIP           *string // hashed
-	EnqueuedAt         *time.Time
-	SubmittedAt        *time.Time
-	ReceivedAt         time.Time
+	// WifiRating is the qualitative bucket the Android client computes
+	// from RSSI + linkSpeed (e.g. STRONG, GOOD, MARGINAL, WEAK).
+	// Extracted from payload->'result'->'wifiLink' on read; not a
+	// dedicated column. Null when the cert ran on Ethernet or when an
+	// older client didn't emit the field.
+	WifiRating  *string
+	WifiRssiDbm *int
+	PublicIP    *string // hashed
+	EnqueuedAt  *time.Time
+	SubmittedAt *time.Time
+	ReceivedAt  time.Time
 }
 
 func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSummary, int, error) {
@@ -211,6 +256,12 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 		conds = append(conds, "submitted_at is not null and submitted_at - completed_at > interval '5 minutes'")
 	}
 
+	sortExpr, _ := sortColumn(f.SortBy)
+	dir := "desc"
+	if strings.EqualFold(f.SortDir, "asc") {
+		dir = "asc"
+	}
+
 	args = append(args, f.Limit, f.Offset)
 	q := fmt.Sprintf(`
 		select
@@ -219,13 +270,15 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			achieved_tier, marginal_metric, transport,
 			widevine_level, hdr_types, display_max_height, thermal_status,
 			download_steady_mbps, upload_steady_mbps, latency_median_ms,
+			payload->'result'->'wifiLink'->>'rating' as wifi_rating,
+			(payload->'result'->'wifiLink'->>'rssiDbm')::int as wifi_rssi_dbm,
 			public_ip, enqueued_at, submitted_at, received_at,
 			count(*) over () as total
 		from certifications
 		where %s
-		order by completed_at desc
+		order by %s %s nulls last, completed_at desc
 		limit $%d offset $%d
-	`, strings.Join(conds, " and "), len(args)-1, len(args))
+	`, strings.Join(conds, " and "), sortExpr, dir, len(args)-1, len(args))
 
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -243,6 +296,7 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 			&c.AchievedTier, &c.MarginalMetric, &c.Transport,
 			&c.WidevineLevel, &c.HDRTypes, &c.DisplayMaxHeight, &c.ThermalStatus,
 			&c.DownloadSteadyMbps, &c.UploadSteadyMbps, &c.LatencyMedianMs,
+			&c.WifiRating, &c.WifiRssiDbm,
 			&c.PublicIP, &c.EnqueuedAt, &c.SubmittedAt, &c.ReceivedAt, &total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("List scan: %w", err)

@@ -191,6 +191,76 @@ func TestAdmin_ListCertifications_FilterByHSN(t *testing.T) {
 	}
 }
 
+func TestAdmin_ListCertifications_WifiFieldsAndSort(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	// Two POSTs with different RSSI values so we can prove the sort
+	// expression resolves and orders correctly.
+	rssis := []int{-60, -80}
+	for i, rssi := range rssis {
+		fix := loadCertFixture(t)
+		fix["certificationId"] = []string{
+			"c0000001-0000-0000-0000-000000000001",
+			"c0000002-0000-0000-0000-000000000002",
+		}[i]
+		result := fix["result"].(map[string]any)
+		wifiLink := result["wifiLink"].(map[string]any)
+		wifiLink["rssiDbm"] = rssi
+		body, _ := json.Marshal(fix)
+		r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+		for k, v := range defaultHeaders() {
+			r.Header.Set(k, v)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.router.ServeHTTP(w, r)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed POST %d: got %d", i, w.Code)
+		}
+	}
+
+	// Default (desc): strongest RSSI first (least negative).
+	resp := adminGet(t, env.router, "/admin/certifications?sort=wifi", testAdminToken)
+	defer resp.Body.Close()
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	dec(t, resp, &body)
+	if len(body.Items) != 2 {
+		t.Fatalf("items: got %d, want 2", len(body.Items))
+	}
+	if body.Items[0]["wifiRating"] != "STRONG" {
+		t.Errorf("wifiRating: got %v, want STRONG (extracted from payload->result->wifiLink)", body.Items[0]["wifiRating"])
+	}
+	// json.Number-ish: float64 from generic map decoder.
+	if got, want := body.Items[0]["wifiRssiDbm"].(float64), float64(-60); got != want {
+		t.Errorf("desc sort: first rssi got %v, want %v", got, want)
+	}
+	if got, want := body.Items[1]["wifiRssiDbm"].(float64), float64(-80); got != want {
+		t.Errorf("desc sort: second rssi got %v, want %v", got, want)
+	}
+
+	// asc: weakest RSSI first.
+	resp2 := adminGet(t, env.router, "/admin/certifications?sort=wifi&dir=asc", testAdminToken)
+	defer resp2.Body.Close()
+	var body2 struct {
+		Items []map[string]any `json:"items"`
+	}
+	dec(t, resp2, &body2)
+	if got, want := body2.Items[0]["wifiRssiDbm"].(float64), float64(-80); got != want {
+		t.Errorf("asc sort: first rssi got %v, want %v", got, want)
+	}
+
+	// Unknown sort key falls back to default ordering — must not 500
+	// or expose a SQL error.
+	resp3 := adminGet(t, env.router, "/admin/certifications?sort=DROP+TABLE", testAdminToken)
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("unknown sort key: got %d, want 200 (defensive fallback)", resp3.StatusCode)
+	}
+}
+
 func TestAdmin_ListCertifications_FilterByPublicIP(t *testing.T) {
 	env, cleanup := newAdminEnv(t)
 	defer cleanup()
