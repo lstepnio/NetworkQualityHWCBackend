@@ -629,17 +629,16 @@ func adminPost(t *testing.T, router http.Handler, path, token string, body []byt
 	return w.Result()
 }
 
+// sampleConfigDoc returns a minimal v1.4.0-shape cert-config — no
+// `servers`, no `tests.latency`, no per-phase `durationSec`/
+// `perRequestBytes`/`warmupFraction` keys.
 func sampleConfigDoc(version string) []byte {
 	doc := map[string]any{
 		"schemaVersion": 1,
 		"configVersion": version,
-		"servers": []map[string]any{
-			{"id": "dfw", "name": "Dallas", "host": "speedtestdfw.gethotwired.com", "port": 8080, "secure": true, "weight": 1.0},
-		},
 		"tests": map[string]any{
-			"download": map[string]any{"durationSec": 10, "parallel": 4, "perRequestBytes": 100000000, "warmupFraction": 0.33},
-			"upload":   map[string]any{"durationSec": 5, "parallel": 2, "perRequestBytes": 50000000, "warmupFraction": 0.33},
-			"latency":  map[string]any{"samples": 10, "timeoutMs": 2000},
+			"download": map[string]any{"parallel": 4},
+			"upload":   map[string]any{"parallel": 2},
 			"playback": map[string]any{"manifestUrl": "https://example.test/m.mpd", "durationSec": 20},
 		},
 		"tiers": []map[string]any{
@@ -724,7 +723,6 @@ func TestAdmin_CreateCertConfig_Validation(t *testing.T) {
 		{"empty configVersion", func(m map[string]any) { m["configVersion"] = "" }},
 		{"missing schemaVersion", func(m map[string]any) { delete(m, "schemaVersion") }},
 		{"zero schemaVersion", func(m map[string]any) { m["schemaVersion"] = 0 }},
-		{"empty servers", func(m map[string]any) { m["servers"] = []map[string]any{} }},
 		{"empty tiers", func(m map[string]any) { m["tiers"] = []map[string]any{} }},
 		{"missing tests", func(m map[string]any) { delete(m, "tests") }},
 		{"missing uploadResults", func(m map[string]any) { delete(m, "uploadResults") }},
@@ -745,18 +743,6 @@ func TestAdmin_CreateCertConfig_Validation(t *testing.T) {
 		}},
 		{"upload.parallel above ceiling (dashboard slider lets users pick >16)", func(m map[string]any) {
 			m["tests"].(map[string]any)["upload"].(map[string]any)["parallel"] = 32
-		}},
-		{"download.warmupFraction above ceiling", func(m map[string]any) {
-			m["tests"].(map[string]any)["download"].(map[string]any)["warmupFraction"] = 0.95
-		}},
-		{"download.perRequestBytes below floor", func(m map[string]any) {
-			m["tests"].(map[string]any)["download"].(map[string]any)["perRequestBytes"] = 100
-		}},
-		{"latency.samples below floor", func(m map[string]any) {
-			m["tests"].(map[string]any)["latency"].(map[string]any)["samples"] = 1
-		}},
-		{"latency.timeoutMs above ceiling", func(m map[string]any) {
-			m["tests"].(map[string]any)["latency"].(map[string]any)["timeoutMs"] = 60000
 		}},
 		// ─── wifiLinkQuality (optional but validated when present) ───
 		{"wifiLinkQuality.excellentRssiMin out of range", func(m map[string]any) {
