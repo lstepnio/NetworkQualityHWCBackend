@@ -11,7 +11,7 @@ Go server for the FisionTV+ Network Certifier. Serves:
   - `GET /v1/app/version` — app-update manifest (versionCode, APK URL, sha256, signing-cert sha256). Returns **404** when no manifest is active (not 503).
 - **`/admin/*`** — admin-facing CRUD for the dashboard. Bearer-token guarded (env `ADMIN_TOKEN`).
 
-Postgres-backed. `chi` router, `pgx/v5`, `golang-migrate`, `kin-openapi` for runtime request validation against the contract.
+Postgres-backed. `chi` router, `pgx/v5`, `golang-migrate`. **No runtime OpenAPI validation** — request bodies are validated per-handler in `internal/api/*.go` using `internal/api/jsonpath.go` extractors against the fields each handler actually consumes. The contract submodule (`contract/openapi.yaml`) is a documentation + cross-repo schema-alignment artifact, not a runtime dependency.
 
 ## Neighbors
 
@@ -66,6 +66,6 @@ Resolves the sibling repos relative to its own location, so it survives a checko
 
 ## Operational notes
 
-- The contract submodule is read-only at runtime — `internal/openapi/validator.go` loads `contract/openapi.yaml` at boot.
+- The contract submodule is documentation-only at runtime; nothing in `internal/` loads `contract/openapi.yaml`. Cross-repo schema discipline is enforced via the contract pin in CI (`git -C contract describe --tags --exact-match` must be clean) plus matching per-field validation in `internal/api/admin.go` and `internal/api/certifications.go`.
 - The dev seed (`db/seed/cert-config.json`) lands an `uploadResults.enabled = true` config; flipping that to `false` will silently block STB POSTs.
 - `payload_hash` is the dedupe key for `POST /v1/certifications`. Same bytes → 200 (idempotent). Different bytes for the same `certification_id` → 409 conflict.
