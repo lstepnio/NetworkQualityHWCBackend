@@ -313,10 +313,12 @@ func TestPostCertification_PIIRedacted(t *testing.T) {
 	if cert.HSN == nil || *cert.HSN != "RAW_HSN_12345" {
 		t.Errorf("hsn column: got %v, want plain RAW_HSN_12345", cert.HSN)
 	}
-	// publicIp on the column is the hashed value (separate hot-path field
-	// for searches; admin API hashes the query input before comparison).
-	if cert.PublicIP == nil || *cert.PublicIP != hasher.Hash("203.0.113.5") {
-		t.Errorf("public_ip column: got %v, want hash of 203.0.113.5", cert.PublicIP)
+	// publicIp on the column is now PLAIN TEXT — hashing was dropped from
+	// piiPaths because support filters on it most often and the lab-LAN
+	// threat model doesn't warrant the friction. Legacy rows still carry
+	// hashed values; only new inserts are plaintext.
+	if cert.PublicIP == nil || *cert.PublicIP != "203.0.113.5" {
+		t.Errorf("public_ip column: got %v, want plain 203.0.113.5", cert.PublicIP)
 	}
 
 	var stored map[string]any
@@ -331,8 +333,8 @@ func TestPostCertification_PIIRedacted(t *testing.T) {
 		t.Errorf("payload.identity.ethernetMac not hashed: %v", storedIdentity["ethernetMac"])
 	}
 	storedNet := stored["network"].(map[string]any)
-	if storedNet["publicIp"] != hasher.Hash("203.0.113.5") {
-		t.Errorf("payload.network.publicIp not hashed: %v", storedNet["publicIp"])
+	if storedNet["publicIp"] != "203.0.113.5" {
+		t.Errorf("payload.network.publicIp: got %v, want plaintext 203.0.113.5", storedNet["publicIp"])
 	}
 	if storedNet["gatewayIp"] != hasher.Hash("192.168.10.1") {
 		t.Errorf("payload.network.gatewayIp not hashed: %v", storedNet["gatewayIp"])

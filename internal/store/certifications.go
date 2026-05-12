@@ -132,7 +132,7 @@ type ListFilter struct {
 	DeviceID      string
 	ConfigVersion string
 	HSN           string // exact match against the (now plain) hsn column
-	PublicIPHash  string // exact match against the (hashed) public_ip column — caller hashes
+	PublicIP      string // exact-match against the `public_ip` column (plaintext post the de-hashing policy change; legacy rows still carry SHA-256 strings and are not returned by a plaintext-IP query)
 	From          *time.Time
 	To            *time.Time
 	// QueuedOnly returns only rows whose submitted_at - completed_at is
@@ -240,8 +240,8 @@ func (s *CertificationsStore) List(ctx context.Context, f ListFilter) ([]ListSum
 	if f.HSN != "" {
 		add("hsn = $%d", f.HSN)
 	}
-	if f.PublicIPHash != "" {
-		add("public_ip = $%d", f.PublicIPHash)
+	if f.PublicIP != "" {
+		add("public_ip = $%d", f.PublicIP)
 	}
 	if f.From != nil {
 		add("completed_at >= $%d", *f.From)

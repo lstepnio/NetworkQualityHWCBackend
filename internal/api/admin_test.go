@@ -297,13 +297,14 @@ func TestAdmin_ListCertifications_FilterByPublicIP(t *testing.T) {
 	if body.Total != 1 {
 		t.Errorf("total: got %d, want 1 (publicIp filter)", body.Total)
 	}
-	// The response carries publicIpHash, never the plain IP.
+	// The response carries the plaintext publicIp (de-hashed in the
+	// PII-policy update — see internal/pii/hash.go::piiPaths).
 	if len(body.Items) > 0 {
-		if _, hasPlain := body.Items[0]["publicIp"]; hasPlain {
-			t.Error("response leaks plain publicIp; should only carry publicIpHash")
+		if _, hasLegacyHash := body.Items[0]["publicIpHash"]; hasLegacyHash {
+			t.Error("response carries legacy publicIpHash field; should have been renamed to publicIp")
 		}
-		if h, ok := body.Items[0]["publicIpHash"].(string); !ok || len(h) != 64 {
-			t.Errorf("publicIpHash: got %v, want 64-char hex", body.Items[0]["publicIpHash"])
+		if ip, ok := body.Items[0]["publicIp"].(string); !ok || ip != "203.0.113.5" {
+			t.Errorf("publicIp: got %v, want plain 203.0.113.5", body.Items[0]["publicIp"])
 		}
 	}
 }

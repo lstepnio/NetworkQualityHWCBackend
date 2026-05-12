@@ -49,12 +49,27 @@ func slogRequest(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("path", r.URL.Path),
 				slog.Int("status", sr.status),
 				slog.Duration("dur", time.Since(start)),
+				slog.String("client_ip", clientIP(r)),
 				slog.String("device_id", r.Header.Get("X-Device-Id")),
 				slog.String("app_version", r.Header.Get("X-App-Version")),
 				slog.String("request_id", w.Header().Get("X-Request-Id")),
 			)
 		})
 	}
+}
+
+// clientIP returns the network-layer source address of the request,
+// stripped of its port. We deliberately ignore X-Forwarded-For today:
+// the lab-LAN deployment has no reverse proxy in front, so trusting
+// XFF would just hand any caller a way to spoof the access log. When
+// prod ships behind a load balancer, gate XFF parsing behind a
+// trusted-proxy allowlist before flipping that on.
+func clientIP(r *http.Request) string {
+	addr := r.RemoteAddr
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		return addr[:i]
+	}
+	return addr
 }
 
 func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {

@@ -32,15 +32,26 @@ func (h *Hasher) Hash(value string) string {
 }
 
 // piiPaths enumerates the JSONPath-ish locations rewritten in every payload.
-// HSN was originally on this list per SPEC §2's catch-all but has been
-// promoted to a non-PII identifier — it's the join key to the account-
-// management system, so it has to land in plain text. Existing rows
-// already have hashed HSN values and stay that way (one-way SHA-256
-// can't be reversed; only future inserts get plain text).
+//
+// Demotions to plain text over time:
+//
+//   - HSN was originally on this list per SPEC §2's catch-all but is the
+//     join key to the account-management system, so it has to land in
+//     plain text.
+//   - network.publicIp was removed because it's the field support filters
+//     on most often; hashing meant typed-in IPs had to be hashed on the
+//     server before SQL comparison, the dashboard couldn't show the
+//     value, and the access log couldn't correlate to a request source.
+//     The lab-LAN threat model doesn't warrant the friction.
+//
+// Existing rows whose values were hashed under the previous policy keep
+// their hashes — one-way SHA-256 can't be reversed; only future inserts
+// land in plain text. The admin filter switched to plaintext-comparison,
+// so historical hashed rows are no longer searchable by IP. That trade
+// was accepted at policy-change time.
 var piiPaths = [][]string{
 	{"identity", "ethernetMac"},
 	{"identity", "wifiMac"},
-	{"network", "publicIp"},
 	{"network", "gatewayIp"},
 	{"wifi", "ssid"},
 	{"wifi", "bssid"},
