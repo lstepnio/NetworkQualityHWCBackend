@@ -246,11 +246,14 @@ func (h *AdminHandler) QueueStats(w http.ResponseWriter, r *http.Request) {
 }
 
 type adminConfigSummary struct {
-	ConfigVersion string    `json:"configVersion"`
-	SchemaVersion int       `json:"schemaVersion"`
-	IsActive      bool      `json:"isActive"`
-	CreatedAt     time.Time `json:"createdAt"`
-	Document      any       `json:"document,omitempty"`
+	ConfigVersion          string    `json:"configVersion"`
+	SchemaVersion          int       `json:"schemaVersion"`
+	IsActive               bool      `json:"isActive"`
+	CreatedAt              time.Time `json:"createdAt"`
+	Document               any       `json:"document,omitempty"`
+	TargetManufacturer     *string   `json:"targetManufacturer,omitempty"`
+	TargetModel            *string   `json:"targetModel,omitempty"`
+	TargetBuildFingerprint *string   `json:"targetBuildFingerprint,omitempty"`
 }
 
 func (h *AdminHandler) ListCertConfigs(w http.ResponseWriter, r *http.Request) {
@@ -263,10 +266,13 @@ func (h *AdminHandler) ListCertConfigs(w http.ResponseWriter, r *http.Request) {
 	items := make([]adminConfigSummary, 0, len(rows))
 	for _, c := range rows {
 		s := adminConfigSummary{
-			ConfigVersion: c.ConfigVersion,
-			SchemaVersion: c.SchemaVersion,
-			IsActive:      c.IsActive,
-			CreatedAt:     c.CreatedAt,
+			ConfigVersion:          c.ConfigVersion,
+			SchemaVersion:          c.SchemaVersion,
+			IsActive:               c.IsActive,
+			CreatedAt:              c.CreatedAt,
+			TargetManufacturer:     c.TargetManufacturer,
+			TargetModel:            c.TargetModel,
+			TargetBuildFingerprint: c.TargetBuildFingerprint,
 		}
 		if includeDoc {
 			var doc any
@@ -297,11 +303,14 @@ func (h *AdminHandler) GetCertConfig(w http.ResponseWriter, r *http.Request) {
 	var doc any
 	_ = json.Unmarshal(c.Document, &doc)
 	writeJSONValue(w, http.StatusOK, adminConfigSummary{
-		ConfigVersion: c.ConfigVersion,
-		SchemaVersion: c.SchemaVersion,
-		IsActive:      c.IsActive,
-		CreatedAt:     c.CreatedAt,
-		Document:      doc,
+		ConfigVersion:          c.ConfigVersion,
+		SchemaVersion:          c.SchemaVersion,
+		IsActive:               c.IsActive,
+		CreatedAt:              c.CreatedAt,
+		Document:               doc,
+		TargetManufacturer:     c.TargetManufacturer,
+		TargetModel:            c.TargetModel,
+		TargetBuildFingerprint: c.TargetBuildFingerprint,
 	})
 }
 
@@ -346,7 +355,12 @@ func (h *AdminHandler) CreateCertConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := h.configs.Insert(r.Context(), cv, int(sv), canonical); err != nil {
+	targetManufacturer := stringPtrFromDoc(doc, "targetManufacturer")
+	targetModel := stringPtrFromDoc(doc, "targetModel")
+	targetBuildFingerprint := stringPtrFromDoc(doc, "targetBuildFingerprint")
+
+	if err := h.configs.Insert(r.Context(), cv, int(sv), canonical,
+		targetManufacturer, targetModel, targetBuildFingerprint); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			writeError(w, http.StatusConflict, "config_version already exists")
@@ -364,12 +378,34 @@ func (h *AdminHandler) CreateCertConfig(w http.ResponseWriter, r *http.Request) 
 	var docOut any
 	_ = json.Unmarshal(c.Document, &docOut)
 	writeJSONValue(w, http.StatusCreated, adminConfigSummary{
-		ConfigVersion: c.ConfigVersion,
-		SchemaVersion: c.SchemaVersion,
-		IsActive:      c.IsActive,
-		CreatedAt:     c.CreatedAt,
-		Document:      docOut,
+		ConfigVersion:          c.ConfigVersion,
+		SchemaVersion:          c.SchemaVersion,
+		IsActive:               c.IsActive,
+		CreatedAt:              c.CreatedAt,
+		Document:               docOut,
+		TargetManufacturer:     c.TargetManufacturer,
+		TargetModel:            c.TargetModel,
+		TargetBuildFingerprint: c.TargetBuildFingerprint,
 	})
+}
+
+// stringPtrFromDoc reads an optional string field from an admin POST
+// envelope. Returns nil when the key is absent, JSON null, the empty
+// string, or any non-string type — callers should validate type
+// upstream (see validateCertConfigEnvelope). Trimming empty-string to
+// nil matches the docker-compose / curl ergonomic of "absent ==
+// empty string", and keeps the DB selector NULL rather than "" which
+// would never match any device.
+func stringPtrFromDoc(doc map[string]any, key string) *string {
+	raw, ok := doc[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	s, ok := raw.(string)
+	if !ok || s == "" {
+		return nil
+	}
+	return &s
 }
 
 // ActivateCertConfig flips is_active on the named config. Inside one
@@ -393,11 +429,14 @@ func (h *AdminHandler) ActivateCertConfig(w http.ResponseWriter, r *http.Request
 	var docOut any
 	_ = json.Unmarshal(c.Document, &docOut)
 	writeJSONValue(w, http.StatusOK, adminConfigSummary{
-		ConfigVersion: c.ConfigVersion,
-		SchemaVersion: c.SchemaVersion,
-		IsActive:      c.IsActive,
-		CreatedAt:     c.CreatedAt,
-		Document:      docOut,
+		ConfigVersion:          c.ConfigVersion,
+		SchemaVersion:          c.SchemaVersion,
+		IsActive:               c.IsActive,
+		CreatedAt:              c.CreatedAt,
+		Document:               docOut,
+		TargetManufacturer:     c.TargetManufacturer,
+		TargetModel:            c.TargetModel,
+		TargetBuildFingerprint: c.TargetBuildFingerprint,
 	})
 }
 
@@ -435,6 +474,25 @@ func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 		problems = append(problems, ErrorDetail{Path: "tiers", Msg: "required array"})
 	} else if len(arr) == 0 {
 		problems = append(problems, ErrorDetail{Path: "tiers", Msg: "must contain at least one entry"})
+	}
+
+	// Optional v2.2.0 targeting selectors. Any of these can be omitted,
+	// null, or a string up to 255 chars. The DB column is sized for 255;
+	// anything longer is almost certainly a mistake (Android fingerprints
+	// run ~70-120 chars).
+	for _, key := range []string{"targetManufacturer", "targetModel", "targetBuildFingerprint"} {
+		raw, present := doc[key]
+		if !present || raw == nil {
+			continue
+		}
+		s, ok := raw.(string)
+		if !ok {
+			problems = append(problems, ErrorDetail{Path: key, Msg: "must be string or null"})
+			continue
+		}
+		if len(s) > 255 {
+			problems = append(problems, ErrorDetail{Path: key, Msg: "exceeds 255 characters"})
+		}
 	}
 
 	for _, key := range []string{"tests", "uploadResults"} {

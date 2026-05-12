@@ -95,14 +95,25 @@ func newTestEnv(t *testing.T) (*testEnv, func()) {
 
 func (e *testEnv) seedActive(t *testing.T, configVersion string, schemaVersion int, doc string) {
 	t.Helper()
+	e.seedActiveWithTarget(t, configVersion, schemaVersion, doc, nil, nil, nil)
+}
+
+func (e *testEnv) seedActiveWithTarget(
+	t *testing.T, configVersion string, schemaVersion int, doc string,
+	manufacturer, model, fingerprint *string,
+) {
+	t.Helper()
 	ctx := context.Background()
-	if err := e.store.Insert(ctx, configVersion, schemaVersion, []byte(doc)); err != nil {
+	if err := e.store.Insert(ctx, configVersion, schemaVersion, []byte(doc),
+		manufacturer, model, fingerprint); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	if err := e.store.Activate(ctx, configVersion); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
 }
+
+func strPtr(s string) *string { return &s }
 
 func (e *testEnv) doGet(headers map[string]string) *http.Response {
 	r := httptest.NewRequest(http.MethodGet, "/v1/cert-config", nil)
@@ -265,5 +276,132 @@ func TestGetCertConfig_NonBearerAuth_Rejected(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// 7. Per-device targeting (contract v2.2.0). Seeds a default + a
+// manufacturer-targeted row, then asserts each tier resolves correctly.
+func TestGetCertConfig_TargetingResolution(t *testing.T) {
+	env, cleanup := newTestEnv(t)
+	defer cleanup()
+
+	defaultDoc := loadFixture(t)
+	// Same shape, different configVersion so we can tell them apart in the response.
+	seiDoc := strings.Replace(defaultDoc, `"2026-05-06.1"`, `"2026-05-06.sei-target"`, 1)
+	frcDoc := strings.Replace(defaultDoc, `"2026-05-06.1"`, `"2026-05-06.frc-target"`, 1)
+
+	env.seedActive(t, "default-config", 1, defaultDoc)
+	env.seedActiveWithTarget(t, "sei-config", 1, seiDoc, strPtr("SEI Robotics"), nil, nil)
+	env.seedActiveWithTarget(t, "frc-config", 1, frcDoc, strPtr("SEI Robotics"), strPtr("FRC1-Hotwire"), nil)
+
+	cases := []struct {
+		name       string
+		mfr, model string
+		wantVer    string
+	}{
+		{"no headers → default", "", "", "2026-05-06.1"},
+		{"unknown manufacturer → default", "Acme", "X1", "2026-05-06.1"},
+		{"SEI Robotics manufacturer → SEI", "SEI Robotics", "", "2026-05-06.sei-target"},
+		{"SEI Robotics + other model → SEI (manufacturer tier wins over default)", "SEI Robotics", "X1", "2026-05-06.sei-target"},
+		{"SEI Robotics + FRC1-Hotwire → FRC (model tier wins over manufacturer)", "SEI Robotics", "FRC1-Hotwire", "2026-05-06.frc-target"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := defaultHeaders()
+			if tc.mfr != "" {
+				h["X-Device-Manufacturer"] = tc.mfr
+			}
+			if tc.model != "" {
+				h["X-Device-Model"] = tc.model
+			}
+			resp := env.doGet(h)
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				t.Fatalf("status: got %d, want 200", resp.StatusCode)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			var parsed map[string]any
+			if err := json.Unmarshal(body, &parsed); err != nil {
+				t.Fatalf("body json: %v", err)
+			}
+			if got := parsed["configVersion"]; got != tc.wantVer {
+				t.Errorf("configVersion: got %v, want %s", got, tc.wantVer)
+			}
+		})
+	}
+}
+
+// 8. ETag varies per resolved config: an SEI device's ETag must NOT
+// match a default device's ETag, even with the same If-None-Match.
+func TestGetCertConfig_ETagPerResolvedConfig(t *testing.T) {
+	env, cleanup := newTestEnv(t)
+	defer cleanup()
+
+	defaultDoc := loadFixture(t)
+	seiDoc := strings.Replace(defaultDoc, `"2026-05-06.1"`, `"2026-05-06.sei"`, 1)
+	env.seedActive(t, "default-config", 1, defaultDoc)
+	env.seedActiveWithTarget(t, "sei-config", 1, seiDoc, strPtr("SEI Robotics"), nil, nil)
+
+	defaultResp := env.doGet(defaultHeaders())
+	defer defaultResp.Body.Close()
+	defaultETag := defaultResp.Header.Get("ETag")
+
+	h := defaultHeaders()
+	h["X-Device-Manufacturer"] = "SEI Robotics"
+	seiResp := env.doGet(h)
+	defer seiResp.Body.Close()
+	seiETag := seiResp.Header.Get("ETag")
+
+	if defaultETag == "" || seiETag == "" {
+		t.Fatalf("empty ETag(s): default=%q sei=%q", defaultETag, seiETag)
+	}
+	if defaultETag == seiETag {
+		t.Fatalf("expected different ETags per resolved config; got identical %q", defaultETag)
+	}
+
+	// Replay the SEI device's ETag against the default endpoint — must NOT match.
+	h2 := defaultHeaders()
+	h2["If-None-Match"] = seiETag
+	resp := env.doGet(h2)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("spurious 304 across resolved configs: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// 9. Activation is per-target-group: activating a new SEI config
+// deactivates the previous SEI row but leaves the default active.
+func TestGetCertConfig_ActivateScopedToTargetGroup(t *testing.T) {
+	env, cleanup := newTestEnv(t)
+	defer cleanup()
+
+	defaultDoc := loadFixture(t)
+	sei1Doc := strings.Replace(defaultDoc, `"2026-05-06.1"`, `"sei-v1"`, 1)
+	sei2Doc := strings.Replace(defaultDoc, `"2026-05-06.1"`, `"sei-v2"`, 1)
+
+	env.seedActive(t, "default-config", 1, defaultDoc)
+	env.seedActiveWithTarget(t, "sei-v1-config", 1, sei1Doc, strPtr("SEI Robotics"), nil, nil)
+	env.seedActiveWithTarget(t, "sei-v2-config", 1, sei2Doc, strPtr("SEI Robotics"), nil, nil)
+
+	// Default device still gets the default — activate sei-v2 did NOT deactivate it.
+	resp := env.doGet(defaultHeaders())
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var p map[string]any
+	_ = json.Unmarshal(body, &p)
+	if p["configVersion"] != "2026-05-06.1" {
+		t.Errorf("default device after SEI re-activation: got %v, want 2026-05-06.1", p["configVersion"])
+	}
+
+	// SEI device gets sei-v2 (the most recently activated SEI row).
+	h := defaultHeaders()
+	h["X-Device-Manufacturer"] = "SEI Robotics"
+	resp2 := env.doGet(h)
+	defer resp2.Body.Close()
+	body2, _ := io.ReadAll(resp2.Body)
+	var p2 map[string]any
+	_ = json.Unmarshal(body2, &p2)
+	if p2["configVersion"] != "sei-v2" {
+		t.Errorf("SEI device after sei-v2 activation: got %v, want sei-v2", p2["configVersion"])
 	}
 }

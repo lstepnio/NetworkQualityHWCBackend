@@ -60,7 +60,7 @@ func newCertEnv(t *testing.T) (*certEnv, func()) {
 		stopPG()
 		t.Fatalf("read cert-config fixture: %v", err)
 	}
-	if err := cfgStore.Insert(context.Background(), "2026-05-06.1", 1, cfgDoc); err != nil {
+	if err := cfgStore.Insert(context.Background(), "2026-05-06.1", 1, cfgDoc, nil, nil, nil); err != nil {
 		pool.Close()
 		stopPG()
 		t.Fatalf("seed cert_config: %v", err)

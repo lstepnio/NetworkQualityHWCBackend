@@ -37,7 +37,9 @@ func SeedIfEmpty(ctx context.Context, s *CertConfigStore, seedPath string, logge
 		return fmt.Errorf("seed missing configVersion or schemaVersion < 1")
 	}
 
-	if err := s.Insert(ctx, probe.ConfigVersion, probe.SchemaVersion, doc); err != nil {
+	// Seed config is always the all-null default — bootstrapping a fresh
+	// dev DB shouldn't accidentally ship a manufacturer-targeted row.
+	if err := s.Insert(ctx, probe.ConfigVersion, probe.SchemaVersion, doc, nil, nil, nil); err != nil {
 		return fmt.Errorf("seed insert: %w", err)
 	}
 	if err := s.Activate(ctx, probe.ConfigVersion); err != nil {
