@@ -446,7 +446,94 @@ func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 		problems = append(problems, validateTestsRanges(tests)...)
 	}
 
+	// wifiLinkQuality + healthAssessment are OPTIONAL in the wire
+	// format (clients fall back per-field to bundled defaults when
+	// absent). But IF present, every field must be in range and the
+	// ordering invariants must hold — otherwise the client would
+	// silently drop the bad value and the operator wouldn't know
+	// their tuning didn't take effect.
+	if wifi, ok := doc["wifiLinkQuality"].(map[string]any); ok {
+		problems = append(problems, validateWifiLinkQuality(wifi)...)
+	}
+	if hh, ok := doc["healthAssessment"].(map[string]any); ok {
+		problems = append(problems, validateHealthAssessment(hh)...)
+	}
+
 	return problems
+}
+
+// validateWifiLinkQuality mirrors WifiLinkQualityConfig.init in
+// RuntimeConfig.kt. The ordering invariant
+// (excellent > strong > good) is the part that makes the bands
+// well-defined; without it the boundary semantics are nonsense.
+func validateWifiLinkQuality(o map[string]any) []ErrorDetail {
+	const ctx = "wifiLinkQuality"
+	var problems []ErrorDetail
+	problems = append(problems, checkIntRange(o, ctx+".excellentRssiMin", "excellentRssiMin", -100, 0)...)
+	problems = append(problems, checkIntRange(o, ctx+".strongRssiMin", "strongRssiMin", -100, 0)...)
+	problems = append(problems, checkIntRange(o, ctx+".goodRssiMin", "goodRssiMin", -100, 0)...)
+	problems = append(problems, checkFloatRange(o, ctx+".rateAdaptationDegradedThreshold", "rateAdaptationDegradedThreshold", 0.0, 1.0)...)
+
+	// Only check ordering if all three RSSI values parsed cleanly.
+	ex := asInt(o["excellentRssiMin"])
+	st := asInt(o["strongRssiMin"])
+	gd := asInt(o["goodRssiMin"])
+	if ex != nil && st != nil && gd != nil {
+		if !(*ex > *st && *st > *gd) {
+			problems = append(problems, ErrorDetail{
+				Path: ctx,
+				Msg:  fmt.Sprintf("ordering invariant violated: need excellentRssiMin > strongRssiMin > goodRssiMin, got %d > %d > %d", *ex, *st, *gd),
+			})
+		}
+	}
+	return problems
+}
+
+// validateHealthAssessment mirrors HealthAssessmentConfig.init in
+// RuntimeConfig.kt.
+func validateHealthAssessment(o map[string]any) []ErrorDetail {
+	const ctx = "healthAssessment"
+	var problems []ErrorDetail
+	problems = append(problems, checkIntRange(o, ctx+".excellentMin", "excellentMin", 1, 100)...)
+	problems = append(problems, checkIntRange(o, ctx+".strongMin", "strongMin", 1, 100)...)
+	problems = append(problems, checkIntRange(o, ctx+".goodMin", "goodMin", 1, 100)...)
+	// > 1.0 — exclusive minimum.
+	if v, ok := o["topTierStretchUpFactor"]; !ok {
+		problems = append(problems, ErrorDetail{Path: ctx + ".topTierStretchUpFactor", Msg: "required number > 1.0"})
+	} else if num, ok := v.(json.Number); !ok {
+		problems = append(problems, ErrorDetail{Path: ctx + ".topTierStretchUpFactor", Msg: "must be number > 1.0"})
+	} else if f, err := num.Float64(); err != nil || !(f > 1.0) {
+		problems = append(problems, ErrorDetail{Path: ctx + ".topTierStretchUpFactor", Msg: fmt.Sprintf("must be number > 1.0, got %s", num.String())})
+	}
+	problems = append(problems, checkFloatRange(o, ctx+".topTierStretchDownFactor", "topTierStretchDownFactor", 0.0, 1.0)...)
+
+	ex := asInt(o["excellentMin"])
+	st := asInt(o["strongMin"])
+	gd := asInt(o["goodMin"])
+	if ex != nil && st != nil && gd != nil {
+		if !(*ex > *st && *st > *gd) {
+			problems = append(problems, ErrorDetail{
+				Path: ctx,
+				Msg:  fmt.Sprintf("ordering invariant violated: need excellentMin > strongMin > goodMin, got %d > %d > %d", *ex, *st, *gd),
+			})
+		}
+	}
+	return problems
+}
+
+// asInt is a tolerant int extractor for cross-field ordering checks.
+// Returns nil on any failure — the per-field range check has already
+// emitted the specific error for that case.
+func asInt(v any) *int64 {
+	num, ok := v.(json.Number)
+	if !ok {
+		return nil
+	}
+	n, err := num.Int64()
+	if err != nil {
+		return nil
+	}
+	return &n
 }
 
 // validateTestsRanges enforces the numeric ranges that

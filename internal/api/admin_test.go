@@ -673,6 +673,34 @@ func TestAdmin_CreateCertConfig_OK(t *testing.T) {
 	}
 }
 
+func TestAdmin_CreateCertConfig_WithTunables_OK(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	var doc map[string]any
+	_ = json.Unmarshal(sampleConfigDoc("2030-tunables.ok"), &doc)
+	doc["wifiLinkQuality"] = map[string]any{
+		"excellentRssiMin":                -50,
+		"strongRssiMin":                   -60,
+		"goodRssiMin":                     -70,
+		"rateAdaptationDegradedThreshold": 0.6,
+	}
+	doc["healthAssessment"] = map[string]any{
+		"excellentMin":             90,
+		"strongMin":                65,
+		"goodMin":                  40,
+		"topTierStretchUpFactor":   1.3,
+		"topTierStretchDownFactor": 0.75,
+	}
+	b, _ := json.Marshal(doc)
+	resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, b)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		got, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d (%s), want 201", resp.StatusCode, string(got))
+	}
+}
+
 func TestAdmin_CreateCertConfig_Conflict(t *testing.T) {
 	env, cleanup := newAdminEnv(t)
 	defer cleanup()
@@ -729,6 +757,50 @@ func TestAdmin_CreateCertConfig_Validation(t *testing.T) {
 		}},
 		{"latency.timeoutMs above ceiling", func(m map[string]any) {
 			m["tests"].(map[string]any)["latency"].(map[string]any)["timeoutMs"] = 60000
+		}},
+		// ─── wifiLinkQuality (optional but validated when present) ───
+		{"wifiLinkQuality.excellentRssiMin out of range", func(m map[string]any) {
+			m["wifiLinkQuality"] = map[string]any{
+				"excellentRssiMin": -200, "strongRssiMin": -65, "goodRssiMin": -75,
+				"rateAdaptationDegradedThreshold": 0.5,
+			}
+		}},
+		{"wifiLinkQuality ordering invariant violated", func(m map[string]any) {
+			m["wifiLinkQuality"] = map[string]any{
+				"excellentRssiMin": -75, "strongRssiMin": -65, "goodRssiMin": -55,
+				"rateAdaptationDegradedThreshold": 0.5,
+			}
+		}},
+		{"wifiLinkQuality rateAdaptationDegradedThreshold above ceiling", func(m map[string]any) {
+			m["wifiLinkQuality"] = map[string]any{
+				"excellentRssiMin": -55, "strongRssiMin": -65, "goodRssiMin": -75,
+				"rateAdaptationDegradedThreshold": 1.5,
+			}
+		}},
+		// ─── healthAssessment (optional but validated when present) ──
+		{"healthAssessment.excellentMin above 100", func(m map[string]any) {
+			m["healthAssessment"] = map[string]any{
+				"excellentMin": 150, "strongMin": 55, "goodMin": 30,
+				"topTierStretchUpFactor": 1.5, "topTierStretchDownFactor": 0.66,
+			}
+		}},
+		{"healthAssessment ordering invariant violated", func(m map[string]any) {
+			m["healthAssessment"] = map[string]any{
+				"excellentMin": 30, "strongMin": 55, "goodMin": 80,
+				"topTierStretchUpFactor": 1.5, "topTierStretchDownFactor": 0.66,
+			}
+		}},
+		{"healthAssessment.topTierStretchUpFactor not strictly > 1.0", func(m map[string]any) {
+			m["healthAssessment"] = map[string]any{
+				"excellentMin": 80, "strongMin": 55, "goodMin": 30,
+				"topTierStretchUpFactor": 1.0, "topTierStretchDownFactor": 0.66,
+			}
+		}},
+		{"healthAssessment.topTierStretchDownFactor above 1.0", func(m map[string]any) {
+			m["healthAssessment"] = map[string]any{
+				"excellentMin": 80, "strongMin": 55, "goodMin": 30,
+				"topTierStretchUpFactor": 1.5, "topTierStretchDownFactor": 1.5,
+			}
 		}},
 	}
 	for _, tc := range cases {
