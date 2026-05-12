@@ -72,7 +72,7 @@ type adminCertSummary struct {
 	LatencyMedianMs    *int       `json:"latencyMedianMs,omitempty"`
 	WifiRating         *string    `json:"wifiRating,omitempty"`  // null on Ethernet or older clients
 	WifiRssiDbm        *int       `json:"wifiRssiDbm,omitempty"` // negative integer; -50 stronger than -80
-	PublicIPHash       *string    `json:"publicIpHash,omitempty"` // never the raw IP — already redacted
+	PublicIP           *string    `json:"publicIp,omitempty"` // plaintext for new rows; legacy rows carry the SHA-256 string from the previous policy
 	EnqueuedAt         *time.Time `json:"enqueuedAt,omitempty"`   // contract v1.1.0+; null for older clients
 	SubmittedAt        *time.Time `json:"submittedAt,omitempty"`
 	QueueDelaySeconds  *int64     `json:"queueDelaySeconds,omitempty"` // submittedAt - completedAt; null when submittedAt is null
@@ -103,7 +103,7 @@ func toSummary(s store.ListSummary) adminCertSummary {
 		LatencyMedianMs:    s.LatencyMedianMs,
 		WifiRating:         s.WifiRating,
 		WifiRssiDbm:        s.WifiRssiDbm,
-		PublicIPHash:       s.PublicIP,
+		PublicIP:           s.PublicIP,
 		EnqueuedAt:         s.EnqueuedAt,
 		SubmittedAt:        s.SubmittedAt,
 		QueueDelaySeconds:  queueDelay(s.CompletedAt, s.SubmittedAt),
@@ -139,11 +139,12 @@ func (h *AdminHandler) ListCertifications(w http.ResponseWriter, r *http.Request
 		Limit:         atoiOr(q.Get("limit"), 50),
 		Offset:        atoiOr(q.Get("offset"), 0),
 	}
-	// Caller types the raw IP in the search box; we hash it server-side
-	// (the column is the peppered SHA-256, not the plaintext) so the search
-	// stays exact-match without leaking IPs over the wire.
+	// Plaintext exact-match. Caller types the raw IP in the search box; we
+	// compare directly against the `public_ip` column. Rows ingested under
+	// the previous hashing policy carry a SHA-256 string and are not
+	// returned by an IP-text search — accepted at the policy-change time.
 	if pip := q.Get("publicIp"); pip != "" {
-		filter.PublicIPHash = h.pii.Hash(pip)
+		filter.PublicIP = pip
 	}
 	if v := q.Get("from"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
