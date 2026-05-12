@@ -26,6 +26,11 @@ services:
     environment:
       DATABASE_URL: postgres://certifier:certifier@postgres:5432/certifier?sslmode=disable
       HTTP_ADDR: ":8080"
+      # APP_ENV=dev tolerates the dev defaults below. Anything else
+      # (prod, staging, preview, …) trips the fail-fast guard in
+      # internal/config/env.go::validateProductionSafety and refuses
+      # to boot.
+      APP_ENV: dev
       DEV_SEED: "1"
       PII_PEPPER: dev-pepper-change-me
       ADMIN_TOKEN: dev-admin-token-change-me
