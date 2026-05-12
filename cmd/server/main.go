@@ -61,6 +61,8 @@ func main() {
 		AppVersions:    appVersionStore,
 		PII:            hasher,
 		AdminToken:     env.AdminToken,
+		V1HMACSecret:   env.V1HMACSecret,
+		V1HMACRequire:  env.V1HMACRequire,
 	})
 
 	srv := &http.Server{

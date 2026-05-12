@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lstepnio/NetworkQualityHWCBackend/internal/auth"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/pii"
 	"github.com/lstepnio/NetworkQualityHWCBackend/internal/store"
 )
@@ -20,6 +21,15 @@ type Deps struct {
 	AppVersions    *store.AppVersionStore
 	PII            *pii.Hasher
 	AdminToken     string
+
+	// V1HMACSecret, if non-empty, enables HMAC-SHA256 verification on the
+	// device-facing /v1/* routes. Empty disables the verifier and the
+	// middleware falls back to legacy passthrough (matches the old
+	// permissiveBearer behaviour for clients on pre-HMAC builds).
+	V1HMACSecret string
+	// V1HMACRequire makes a valid HMAC header mandatory on /v1/*. Only
+	// flip this once the field fleet has rolled to a HMAC-aware build.
+	V1HMACRequire bool
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -29,12 +39,17 @@ func NewRouter(d Deps) http.Handler {
 	r.Use(slogRequest(d.Logger))
 	r.Use(recoverer(d.Logger))
 
-	// Device-facing /v1/* routes get the 256 KB body cap and the permissive
-	// bearer middleware. /admin/* routes get a stricter shared-secret check
-	// so the surfaces are isolated.
+	// Device-facing /v1/* routes get the 256 KB body cap and the HMAC-aware
+	// auth middleware (see v1Auth doc for the three operating modes).
+	// /admin/* routes get a stricter shared-secret check so the surfaces
+	// are isolated.
+	var verifier *auth.Verifier
+	if d.V1HMACSecret != "" {
+		verifier = auth.NewVerifier(d.V1HMACSecret)
+	}
 	r.Group(func(r chi.Router) {
 		r.Use(maxBodyBytes)
-		r.Use(permissiveBearer)
+		r.Use(v1Auth(verifier, d.V1HMACRequire, d.Logger))
 
 		cc := NewCertConfigHandler(d.CertConfigs)
 		r.Get("/v1/cert-config", cc.Get)
