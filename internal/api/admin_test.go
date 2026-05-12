@@ -1040,3 +1040,100 @@ func dec(t *testing.T, resp *http.Response, v any) {
 	}
 }
 
+// TestAdmin_ListCertifications_DNSPreferredTrichotomy seeds three rows
+// covering all three states of dns_preferred (false / true / NULL) and
+// asserts:
+//   - the list response surfaces dnsPreferred per the trichotomy
+//   - ?dnsFlagged=true returns only the flagged row (NOT the no-policy one)
+func TestAdmin_ListCertifications_DNSPreferredTrichotomy(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	cases := []struct {
+		certID    string
+		dnsAssess map[string]any // nil means "omit the block entirely"
+	}{
+		{
+			certID: "c0000001-0000-0000-0000-000000000001",
+			dnsAssess: map[string]any{
+				"configuredPreferred": []any{"9.9.9.9"},
+				"nonPreferred":        []any{"1.1.1.1"},
+				"allPreferred":        false,
+			},
+		},
+		{
+			certID: "c0000002-0000-0000-0000-000000000002",
+			dnsAssess: map[string]any{
+				"configuredPreferred": []any{"1.1.1.1", "8.8.8.8"},
+				"nonPreferred":        []any{},
+				"allPreferred":        true,
+			},
+		},
+		{
+			certID:    "c0000003-0000-0000-0000-000000000003",
+			dnsAssess: nil, // pre-v2.3.0 client equivalent; column stays NULL
+		},
+	}
+
+	for i, c := range cases {
+		fix := loadCertFixture(t)
+		fix["certificationId"] = c.certID
+		if c.dnsAssess != nil {
+			fix["dnsAssessment"] = c.dnsAssess
+		} else {
+			delete(fix, "dnsAssessment")
+		}
+		body, _ := json.Marshal(fix)
+		r := httptest.NewRequest(http.MethodPost, "/v1/certifications", bytes.NewReader(body))
+		for k, v := range defaultHeaders() {
+			r.Header.Set(k, v)
+		}
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		env.router.ServeHTTP(w, r)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed POST %d: got %d (body: %s)", i, w.Code, w.Body.String())
+		}
+	}
+
+	// Full list — all three rows back, each with the right trichotomy.
+	resp := adminGet(t, env.router, "/admin/certifications", testAdminToken)
+	defer resp.Body.Close()
+	var body struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	dec(t, resp, &body)
+	if body.Total != 3 {
+		t.Fatalf("total: got %d, want 3", body.Total)
+	}
+	byID := map[string]map[string]any{}
+	for _, it := range body.Items {
+		byID[it["certificationId"].(string)] = it
+	}
+	if got, ok := byID["c0000001-0000-0000-0000-000000000001"]["dnsPreferred"].(bool); !ok || got {
+		t.Errorf("c0000001 dnsPreferred: got %v, want false (flagged)", byID["c0000001-0000-0000-0000-000000000001"]["dnsPreferred"])
+	}
+	if got, ok := byID["c0000002-0000-0000-0000-000000000002"]["dnsPreferred"].(bool); !ok || !got {
+		t.Errorf("c0000002 dnsPreferred: got %v, want true (all preferred)", byID["c0000002-0000-0000-0000-000000000002"]["dnsPreferred"])
+	}
+	if _, present := byID["c0000003-0000-0000-0000-000000000003"]["dnsPreferred"]; present {
+		t.Errorf("c0000003 dnsPreferred: got %v, want omitted (no policy)", byID["c0000003-0000-0000-0000-000000000003"]["dnsPreferred"])
+	}
+
+	// Filter by ?dnsFlagged=true — only the flagged row.
+	respF := adminGet(t, env.router, "/admin/certifications?dnsFlagged=true", testAdminToken)
+	defer respF.Body.Close()
+	var flagged struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	dec(t, respF, &flagged)
+	if flagged.Total != 1 {
+		t.Errorf("dnsFlagged=true total: got %d, want 1", flagged.Total)
+	}
+	if len(flagged.Items) > 0 && flagged.Items[0]["certificationId"] != "c0000001-0000-0000-0000-000000000001" {
+		t.Errorf("dnsFlagged=true returned wrong row: %v", flagged.Items[0]["certificationId"])
+	}
+}
+

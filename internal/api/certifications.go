@@ -71,6 +71,13 @@ func (h *CertificationsHandler) Post(w http.ResponseWriter, r *http.Request) {
 	cert.EthernetMac = strPtr(getString(parsed, "identity", "ethernetMac"))
 	cert.PublicIP = strPtr(getString(parsed, "network", "publicIp"))
 
+	// Denormalize dnsAssessment.allPreferred so the list view can render
+	// the chip + run the ?dnsFlagged filter without parsing JSONB on
+	// every row. Absent on pre-v2.3.0 payloads → nil → column stays NULL.
+	if ap, ok := getBool(parsed, "dnsAssessment", "allPreferred"); ok {
+		cert.DNSPreferred = &ap
+	}
+
 	outcome, err := h.store.Upsert(r.Context(), cert)
 	if err != nil {
 		h.logger.Error("upsert", slog.String("err", err.Error()),

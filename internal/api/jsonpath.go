@@ -22,6 +22,22 @@ func getString(parsed map[string]any, path ...string) string {
 	return s
 }
 
+// getBool walks the path and returns the leaf as a bool. Returns
+// (false, false) if missing or not a boolean. Used to extract
+// dnsAssessment.allPreferred at ingest into the hot-path
+// `dns_preferred` column.
+func getBool(parsed map[string]any, path ...string) (bool, bool) {
+	v, ok := getAt(parsed, path)
+	if !ok || v == nil {
+		return false, false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, false
+	}
+	return b, true
+}
+
 // getInt walks the path and converts the leaf to int. Returns (0, false) if
 // missing or not numeric. Accepts json.Number, float64, and int.
 func getInt(parsed map[string]any, path ...string) (int, bool) {
