@@ -496,6 +496,36 @@ func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 		}
 	}
 
+	// Optional v2.3.0 DNS policy. Entries are treated as opaque strings —
+	// the contract intentionally allows hostnames / IPv6 / anything, with
+	// exact-match comparison performed client-side on the STB. We only
+	// enforce shape (object with non-empty string array) and a length cap
+	// so a typo doesn't smuggle in a megabyte blob.
+	if raw, present := doc["dnsPolicy"]; present && raw != nil {
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			problems = append(problems, ErrorDetail{Path: "dnsPolicy", Msg: "must be object or null"})
+		} else {
+			arr, ok := obj["preferredServers"].([]any)
+			if !ok {
+				problems = append(problems, ErrorDetail{Path: "dnsPolicy.preferredServers", Msg: "required array of strings"})
+			} else if len(arr) == 0 {
+				problems = append(problems, ErrorDetail{Path: "dnsPolicy.preferredServers", Msg: "must contain at least one entry"})
+			} else {
+				for i, v := range arr {
+					s, ok := v.(string)
+					if !ok || s == "" {
+						problems = append(problems, ErrorDetail{Path: fmt.Sprintf("dnsPolicy.preferredServers[%d]", i), Msg: "must be non-empty string"})
+						continue
+					}
+					if len(s) > 255 {
+						problems = append(problems, ErrorDetail{Path: fmt.Sprintf("dnsPolicy.preferredServers[%d]", i), Msg: "exceeds 255 characters"})
+					}
+				}
+			}
+		}
+	}
+
 	for _, key := range []string{"tests", "uploadResults"} {
 		if _, ok := doc[key].(map[string]any); !ok {
 			problems = append(problems, ErrorDetail{Path: key, Msg: "required object"})

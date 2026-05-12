@@ -729,6 +729,129 @@ func TestAdmin_CreateCertConfig_WithTunables_OK(t *testing.T) {
 	}
 }
 
+// TestAdmin_CreateCertConfig_WithDnsPolicy_OK covers the v2.3.0 optional
+// `dnsPolicy.preferredServers` envelope: the server should validate it,
+// store it inside the opaque JSONB document, and round-trip it intact on
+// GET. The companion negative cases live in
+// TestAdmin_CreateCertConfig_DnsPolicy_Validation. Omission is asserted as
+// a regression check at the bottom so a future refactor can't make the
+// field implicitly required.
+func TestAdmin_CreateCertConfig_WithDnsPolicy_OK(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	var doc map[string]any
+	_ = json.Unmarshal(sampleConfigDoc("2030-dns.ok"), &doc)
+	doc["dnsPolicy"] = map[string]any{
+		"preferredServers": []string{"1.1.1.1", "8.8.8.8"},
+	}
+	b, _ := json.Marshal(doc)
+	resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, b)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		got, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d (%s), want 201", resp.StatusCode, string(got))
+	}
+
+	// GET round-trip: the stored document must still carry the policy.
+	getResp := adminGet(t, env.router, "/admin/cert-configs/2030-dns.ok", testAdminToken)
+	defer getResp.Body.Close()
+	var body map[string]any
+	dec(t, getResp, &body)
+	gotDoc, ok := body["document"].(map[string]any)
+	if !ok {
+		t.Fatalf("document not present on GET: %v", body)
+	}
+	gotPolicy, ok := gotDoc["dnsPolicy"].(map[string]any)
+	if !ok {
+		t.Fatalf("dnsPolicy missing or wrong shape after round-trip: %v", gotDoc["dnsPolicy"])
+	}
+	servers, ok := gotPolicy["preferredServers"].([]any)
+	if !ok || len(servers) != 2 || servers[0] != "1.1.1.1" || servers[1] != "8.8.8.8" {
+		t.Errorf("preferredServers round-trip mismatch: got %v", gotPolicy["preferredServers"])
+	}
+
+	// Regression: omitting dnsPolicy entirely is still a 201 and the
+	// stored document must not synthesize the key.
+	noDoc := sampleConfigDoc("2030-dns.absent")
+	noResp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, noDoc)
+	defer noResp.Body.Close()
+	if noResp.StatusCode != http.StatusCreated {
+		got, _ := io.ReadAll(noResp.Body)
+		t.Fatalf("omit-dnsPolicy status: got %d (%s), want 201", noResp.StatusCode, string(got))
+	}
+	noGet := adminGet(t, env.router, "/admin/cert-configs/2030-dns.absent", testAdminToken)
+	defer noGet.Body.Close()
+	var noBody map[string]any
+	dec(t, noGet, &noBody)
+	if storedDoc, ok := noBody["document"].(map[string]any); ok {
+		if _, present := storedDoc["dnsPolicy"]; present {
+			t.Errorf("dnsPolicy should not be present when caller omitted it: %v", storedDoc["dnsPolicy"])
+		}
+	}
+}
+
+// TestAdmin_CreateCertConfig_DnsPolicy_Validation asserts both the 400
+// status AND the specific error path returned for each shape we reject —
+// the dashboard surfaces these paths field-by-field in the inspector.
+func TestAdmin_CreateCertConfig_DnsPolicy_Validation(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	cases := []struct {
+		name     string
+		policy   any
+		wantPath string
+	}{
+		{
+			name:     "empty preferredServers",
+			policy:   map[string]any{"preferredServers": []any{}},
+			wantPath: "dnsPolicy.preferredServers",
+		},
+		{
+			name:     "dnsPolicy is a string",
+			policy:   "garbage",
+			wantPath: "dnsPolicy",
+		},
+		{
+			name:     "non-string entry",
+			policy:   map[string]any{"preferredServers": []any{123}},
+			wantPath: "dnsPolicy.preferredServers[0]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			_ = json.Unmarshal(sampleConfigDoc("2030-dns.bad."+tc.name), &doc)
+			doc["dnsPolicy"] = tc.policy
+			b, _ := json.Marshal(doc)
+			resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, b)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status: got %d, want 400", resp.StatusCode)
+			}
+			var body struct {
+				Error   string `json:"error"`
+				Details []struct {
+					Path string `json:"path"`
+					Msg  string `json:"msg"`
+				} `json:"details"`
+			}
+			dec(t, resp, &body)
+			found := false
+			for _, d := range body.Details {
+				if d.Path == tc.wantPath {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected details to include path %q, got %+v", tc.wantPath, body.Details)
+			}
+		})
+	}
+}
+
 func TestAdmin_CreateCertConfig_Conflict(t *testing.T) {
 	env, cleanup := newAdminEnv(t)
 	defer cleanup()
