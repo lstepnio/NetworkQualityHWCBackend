@@ -672,6 +672,34 @@ func TestAdmin_CreateCertConfig_OK(t *testing.T) {
 	}
 }
 
+func TestAdmin_CreateCertConfig_WithKillswitch_OK(t *testing.T) {
+	env, cleanup := newAdminEnv(t)
+	defer cleanup()
+
+	for _, tc := range []struct {
+		name string
+		ks   map[string]any
+	}{
+		{"enabled with reason", map[string]any{"enabled": true, "reason": "Maintenance"}},
+		{"enabled without reason", map[string]any{"enabled": true}},
+		{"explicitly disabled", map[string]any{"enabled": false}},
+		{"reason explicitly null", map[string]any{"enabled": true, "reason": nil}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			_ = json.Unmarshal(sampleConfigDoc("2030-killswitch."+tc.name), &doc)
+			doc["killswitch"] = tc.ks
+			b, _ := json.Marshal(doc)
+			resp := adminPost(t, env.router, "/admin/cert-configs", testAdminToken, b)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusCreated {
+				got, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status: got %d (%s), want 201", resp.StatusCode, string(got))
+			}
+		})
+	}
+}
+
 func TestAdmin_CreateCertConfig_WithTunables_OK(t *testing.T) {
 	env, cleanup := newAdminEnv(t)
 	defer cleanup()
@@ -743,6 +771,19 @@ func TestAdmin_CreateCertConfig_Validation(t *testing.T) {
 		}},
 		{"upload.parallel above ceiling (dashboard slider lets users pick >16)", func(m map[string]any) {
 			m["tests"].(map[string]any)["upload"].(map[string]any)["parallel"] = 32
+		}},
+		// ─── killswitch (optional but strict when present) ───
+		{"killswitch missing enabled", func(m map[string]any) {
+			m["killswitch"] = map[string]any{"reason": "Maintenance"}
+		}},
+		{"killswitch enabled as string (must be boolean, not 'yes'/'true')", func(m map[string]any) {
+			m["killswitch"] = map[string]any{"enabled": "true"}
+		}},
+		{"killswitch enabled as number (must be boolean)", func(m map[string]any) {
+			m["killswitch"] = map[string]any{"enabled": 1}
+		}},
+		{"killswitch reason as number (must be string or null)", func(m map[string]any) {
+			m["killswitch"] = map[string]any{"enabled": true, "reason": 42}
 		}},
 		// ─── wifiLinkQuality (optional but validated when present) ───
 		{"wifiLinkQuality.excellentRssiMin out of range", func(m map[string]any) {

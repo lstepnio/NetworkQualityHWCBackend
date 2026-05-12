@@ -460,6 +460,39 @@ func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 		problems = append(problems, validateHealthAssessment(hh)...)
 	}
 
+	// killswitch is optional. When present, must be an object with a
+	// boolean `enabled` and (optionally) a string `reason`. We're strict
+	// about the boolean type — a typo like `"enabled": "yes"` would be
+	// silently parsed as `true` by some JSON libraries and engage the
+	// killswitch unintentionally. Reject the whole config in that case
+	// so the operator notices.
+	if ks, ok := doc["killswitch"].(map[string]any); ok {
+		problems = append(problems, validateKillswitch(ks)...)
+	}
+
+	return problems
+}
+
+func validateKillswitch(o map[string]any) []ErrorDetail {
+	const ctx = "killswitch"
+	var problems []ErrorDetail
+
+	enabled, present := o["enabled"]
+	if !present {
+		problems = append(problems, ErrorDetail{Path: ctx + ".enabled", Msg: "required boolean"})
+	} else if _, ok := enabled.(bool); !ok {
+		problems = append(problems, ErrorDetail{Path: ctx + ".enabled", Msg: "must be boolean (true/false), not a string or number"})
+	}
+
+	if reason, present := o["reason"]; present {
+		// Allow explicit null; reject anything else that isn't a string.
+		if reason != nil {
+			if _, ok := reason.(string); !ok {
+				problems = append(problems, ErrorDetail{Path: ctx + ".reason", Msg: "must be string or null"})
+			}
+		}
+	}
+
 	return problems
 }
 
