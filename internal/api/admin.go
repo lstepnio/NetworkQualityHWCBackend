@@ -405,13 +405,17 @@ func (h *AdminHandler) ActivateCertConfig(w http.ResponseWriter, r *http.Request
 // numeric ranges inside `tests.*` that the Android RuntimeConfig enforces
 // via `require(...)`. Mirroring those ranges here means a dashboard
 // mistake (e.g. playback.durationSec=1) is rejected with a 400 instead
-// of being accepted and then bricking every STB that fetches the config
-// (the parser is currently all-or-nothing: one bad field drops the whole
-// config and the STB falls back to bundled defaults).
+// of being accepted and then bricking every STB that fetches the config.
 //
 // Ranges below MUST stay in sync with
 // NetworkQualityHWC/.../config/RuntimeConfig.kt — drift here means the
 // backend accepts configs that the app then rejects.
+//
+// As of contract v1.4.0, `servers[]`, `tests.latency`, and the per-phase
+// `durationSec`/`perRequestBytes`/`warmupFraction` keys are deprecated:
+// nothing on the Android side reads them, so we no longer require them
+// or validate their ranges. Existing pre-v1.4.0 configs in the DB still
+// validate because we don't reject unknown keys.
 func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 	var problems []ErrorDetail
 
@@ -427,13 +431,10 @@ func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 		problems = append(problems, ErrorDetail{Path: "schemaVersion", Msg: "must be integer >= 1"})
 	}
 
-	for _, key := range []string{"servers", "tiers"} {
-		arr, ok := doc[key].([]any)
-		if !ok {
-			problems = append(problems, ErrorDetail{Path: key, Msg: "required array"})
-		} else if len(arr) == 0 {
-			problems = append(problems, ErrorDetail{Path: key, Msg: "must contain at least one entry"})
-		}
+	if arr, ok := doc["tiers"].([]any); !ok {
+		problems = append(problems, ErrorDetail{Path: "tiers", Msg: "required array"})
+	} else if len(arr) == 0 {
+		problems = append(problems, ErrorDetail{Path: "tiers", Msg: "must contain at least one entry"})
 	}
 
 	for _, key := range []string{"tests", "uploadResults"} {
@@ -538,7 +539,10 @@ func asInt(v any) *int64 {
 
 // validateTestsRanges enforces the numeric ranges that
 // RuntimeConfig.kt's `require(...)` calls would otherwise turn into a
-// fatal parse failure on the STB.
+// fatal parse failure on the STB. As of contract v1.4.0 the only
+// per-phase knob still consumed is `parallel`; `durationSec`,
+// `perRequestBytes`, `warmupFraction`, and the entire `latency`
+// section are deprecated and ignored.
 func validateTestsRanges(tests map[string]any) []ErrorDetail {
 	var problems []ErrorDetail
 
@@ -550,20 +554,10 @@ func validateTestsRanges(tests map[string]any) []ErrorDetail {
 			})
 			return
 		}
-		problems = append(problems, checkIntRange(section, "tests."+phase+".durationSec", "durationSec", 1, 120)...)
 		problems = append(problems, checkIntRange(section, "tests."+phase+".parallel", "parallel", 1, 16)...)
-		problems = append(problems, checkInt64Range(section, "tests."+phase+".perRequestBytes", "perRequestBytes", 1_000_000, 2_000_000_000)...)
-		problems = append(problems, checkFloatRange(section, "tests."+phase+".warmupFraction", "warmupFraction", 0.0, 0.9)...)
 	}
 	checkThroughput("download")
 	checkThroughput("upload")
-
-	if latency, ok := tests["latency"].(map[string]any); ok {
-		problems = append(problems, checkIntRange(latency, "tests.latency.samples", "samples", 3, 100)...)
-		problems = append(problems, checkIntRange(latency, "tests.latency.timeoutMs", "timeoutMs", 100, 30_000)...)
-	} else {
-		problems = append(problems, ErrorDetail{Path: "tests.latency", Msg: "required object"})
-	}
 
 	if playback, ok := tests["playback"].(map[string]any); ok {
 		problems = append(problems, checkIntRange(playback, "tests.playback.durationSec", "durationSec", 5, 120)...)
