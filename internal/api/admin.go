@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -394,11 +395,17 @@ func (h *AdminHandler) ActivateCertConfig(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// validateCertConfigEnvelope checks the small set of top-level fields we
-// need to insert a valid row. Deeper structural validation (per-tier
-// thresholds, server URLs, etc.) is intentionally deferred to the client
-// — the dashboard's structured editor is the right place to enforce those
-// rules; this admin endpoint trusts inputs from authenticated callers.
+// validateCertConfigEnvelope checks the top-level fields plus the
+// numeric ranges inside `tests.*` that the Android RuntimeConfig enforces
+// via `require(...)`. Mirroring those ranges here means a dashboard
+// mistake (e.g. playback.durationSec=1) is rejected with a 400 instead
+// of being accepted and then bricking every STB that fetches the config
+// (the parser is currently all-or-nothing: one bad field drops the whole
+// config and the STB falls back to bundled defaults).
+//
+// Ranges below MUST stay in sync with
+// NetworkQualityHWC/.../config/RuntimeConfig.kt — drift here means the
+// backend accepts configs that the app then rejects.
 func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 	var problems []ErrorDetail
 
@@ -429,7 +436,88 @@ func validateCertConfigEnvelope(doc map[string]any) []ErrorDetail {
 		}
 	}
 
+	if tests, ok := doc["tests"].(map[string]any); ok {
+		problems = append(problems, validateTestsRanges(tests)...)
+	}
+
 	return problems
+}
+
+// validateTestsRanges enforces the numeric ranges that
+// RuntimeConfig.kt's `require(...)` calls would otherwise turn into a
+// fatal parse failure on the STB.
+func validateTestsRanges(tests map[string]any) []ErrorDetail {
+	var problems []ErrorDetail
+
+	checkThroughput := func(phase string) {
+		section, ok := tests[phase].(map[string]any)
+		if !ok {
+			problems = append(problems, ErrorDetail{
+				Path: "tests." + phase, Msg: "required object",
+			})
+			return
+		}
+		problems = append(problems, checkIntRange(section, "tests."+phase+".durationSec", "durationSec", 1, 120)...)
+		problems = append(problems, checkIntRange(section, "tests."+phase+".parallel", "parallel", 1, 16)...)
+		problems = append(problems, checkInt64Range(section, "tests."+phase+".perRequestBytes", "perRequestBytes", 1_000_000, 2_000_000_000)...)
+		problems = append(problems, checkFloatRange(section, "tests."+phase+".warmupFraction", "warmupFraction", 0.0, 0.9)...)
+	}
+	checkThroughput("download")
+	checkThroughput("upload")
+
+	if latency, ok := tests["latency"].(map[string]any); ok {
+		problems = append(problems, checkIntRange(latency, "tests.latency.samples", "samples", 3, 100)...)
+		problems = append(problems, checkIntRange(latency, "tests.latency.timeoutMs", "timeoutMs", 100, 30_000)...)
+	} else {
+		problems = append(problems, ErrorDetail{Path: "tests.latency", Msg: "required object"})
+	}
+
+	if playback, ok := tests["playback"].(map[string]any); ok {
+		problems = append(problems, checkIntRange(playback, "tests.playback.durationSec", "durationSec", 5, 120)...)
+		if url, ok := playback["manifestUrl"].(string); !ok || url == "" {
+			problems = append(problems, ErrorDetail{Path: "tests.playback.manifestUrl", Msg: "required, non-empty string"})
+		}
+	} else {
+		problems = append(problems, ErrorDetail{Path: "tests.playback", Msg: "required object"})
+	}
+
+	return problems
+}
+
+func checkIntRange(section map[string]any, path, key string, lo, hi int64) []ErrorDetail {
+	v, ok := section[key]
+	if !ok {
+		return []ErrorDetail{{Path: path, Msg: fmt.Sprintf("required integer in [%d,%d]", lo, hi)}}
+	}
+	num, ok := v.(json.Number)
+	if !ok {
+		return []ErrorDetail{{Path: path, Msg: fmt.Sprintf("must be integer in [%d,%d]", lo, hi)}}
+	}
+	n, err := num.Int64()
+	if err != nil || n < lo || n > hi {
+		return []ErrorDetail{{Path: path, Msg: fmt.Sprintf("must be integer in [%d,%d], got %s", lo, hi, num.String())}}
+	}
+	return nil
+}
+
+func checkInt64Range(section map[string]any, path, key string, lo, hi int64) []ErrorDetail {
+	return checkIntRange(section, path, key, lo, hi)
+}
+
+func checkFloatRange(section map[string]any, path, key string, lo, hi float64) []ErrorDetail {
+	v, ok := section[key]
+	if !ok {
+		return []ErrorDetail{{Path: path, Msg: fmt.Sprintf("required number in [%g,%g]", lo, hi)}}
+	}
+	num, ok := v.(json.Number)
+	if !ok {
+		return []ErrorDetail{{Path: path, Msg: fmt.Sprintf("must be number in [%g,%g]", lo, hi)}}
+	}
+	f, err := num.Float64()
+	if err != nil || f < lo || f > hi {
+		return []ErrorDetail{{Path: path, Msg: fmt.Sprintf("must be number in [%g,%g], got %s", lo, hi, num.String())}}
+	}
+	return nil
 }
 
 // --- App-version-manifest admin endpoints -------------------------------
