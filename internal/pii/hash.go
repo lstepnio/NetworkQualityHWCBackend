@@ -38,21 +38,26 @@ func (h *Hasher) Hash(value string) string {
 //   - HSN was originally on this list per SPEC §2's catch-all but is the
 //     join key to the account-management system, so it has to land in
 //     plain text.
-//   - network.publicIp was removed because it's the field support filters
-//     on most often; hashing meant typed-in IPs had to be hashed on the
-//     server before SQL comparison, the dashboard couldn't show the
-//     value, and the access log couldn't correlate to a request source.
-//     The lab-LAN threat model doesn't warrant the friction.
+//   - network.publicIp + network.gatewayIp were removed because they're
+//     the fields support filters on most often; hashing meant typed-in
+//     IPs had to be hashed on the server before SQL comparison, the
+//     dashboard couldn't show the value, and the access log couldn't
+//     correlate to a request source. The lab-LAN threat model doesn't
+//     warrant the friction. publicIp came first; gatewayIp followed once
+//     the same friction showed up in operator triage (a single hashed
+//     gateway-IP value across a /24 of STBs is much less useful than
+//     "192.168.10.1").
 //
 // Existing rows whose values were hashed under the previous policy keep
 // their hashes — one-way SHA-256 can't be reversed; only future inserts
-// land in plain text. The admin filter switched to plaintext-comparison,
-// so historical hashed rows are no longer searchable by IP. That trade
-// was accepted at policy-change time.
+// land in plain text. The admin filter switched to plaintext-comparison
+// for publicIp, so historical hashed rows are no longer searchable by
+// IP. That trade was accepted at policy-change time. There is no
+// admin filter on gatewayIp; it shows up in the payload and dashboard
+// detail view only.
 var piiPaths = [][]string{
 	{"identity", "ethernetMac"},
 	{"identity", "wifiMac"},
-	{"network", "gatewayIp"},
 	{"wifi", "ssid"},
 	{"wifi", "bssid"},
 }

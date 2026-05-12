@@ -336,8 +336,8 @@ func TestPostCertification_PIIRedacted(t *testing.T) {
 	if storedNet["publicIp"] != "203.0.113.5" {
 		t.Errorf("payload.network.publicIp: got %v, want plaintext 203.0.113.5", storedNet["publicIp"])
 	}
-	if storedNet["gatewayIp"] != hasher.Hash("192.168.10.1") {
-		t.Errorf("payload.network.gatewayIp not hashed: %v", storedNet["gatewayIp"])
+	if storedNet["gatewayIp"] != "192.168.10.1" {
+		t.Errorf("payload.network.gatewayIp: got %v, want plaintext 192.168.10.1", storedNet["gatewayIp"])
 	}
 	storedWifi := stored["wifi"].(map[string]any)
 	if storedWifi["ssid"] != hasher.Hash("MyHomeNetwork") {
