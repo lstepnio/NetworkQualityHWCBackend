@@ -55,6 +55,7 @@ func main() {
 
 	router := api.NewRouter(api.Deps{
 		Logger:         logger,
+		DB:             pool,
 		CertConfigs:    cfgStore,
 		Certifications: certStore,
 		AppVersions:    appVersionStore,
