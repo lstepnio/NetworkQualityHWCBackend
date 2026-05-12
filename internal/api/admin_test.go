@@ -630,6 +630,36 @@ func TestAdmin_CreateCertConfig_Validation(t *testing.T) {
 		{"empty tiers", func(m map[string]any) { m["tiers"] = []map[string]any{} }},
 		{"missing tests", func(m map[string]any) { delete(m, "tests") }},
 		{"missing uploadResults", func(m map[string]any) { delete(m, "uploadResults") }},
+		{"playback.durationSec below floor (real-world regression: dev.7/dev.8 shipped with 1)", func(m map[string]any) {
+			m["tests"].(map[string]any)["playback"].(map[string]any)["durationSec"] = 1
+		}},
+		{"playback.durationSec above ceiling", func(m map[string]any) {
+			m["tests"].(map[string]any)["playback"].(map[string]any)["durationSec"] = 121
+		}},
+		{"playback missing manifestUrl", func(m map[string]any) {
+			delete(m["tests"].(map[string]any)["playback"].(map[string]any), "manifestUrl")
+		}},
+		{"download.parallel zero", func(m map[string]any) {
+			m["tests"].(map[string]any)["download"].(map[string]any)["parallel"] = 0
+		}},
+		{"download.parallel above ceiling", func(m map[string]any) {
+			m["tests"].(map[string]any)["download"].(map[string]any)["parallel"] = 17
+		}},
+		{"upload.parallel above ceiling (dashboard slider lets users pick >16)", func(m map[string]any) {
+			m["tests"].(map[string]any)["upload"].(map[string]any)["parallel"] = 32
+		}},
+		{"download.warmupFraction above ceiling", func(m map[string]any) {
+			m["tests"].(map[string]any)["download"].(map[string]any)["warmupFraction"] = 0.95
+		}},
+		{"download.perRequestBytes below floor", func(m map[string]any) {
+			m["tests"].(map[string]any)["download"].(map[string]any)["perRequestBytes"] = 100
+		}},
+		{"latency.samples below floor", func(m map[string]any) {
+			m["tests"].(map[string]any)["latency"].(map[string]any)["samples"] = 1
+		}},
+		{"latency.timeoutMs above ceiling", func(m map[string]any) {
+			m["tests"].(map[string]any)["latency"].(map[string]any)["timeoutMs"] = 60000
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
