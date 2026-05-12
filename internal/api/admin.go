@@ -70,6 +70,8 @@ type adminCertSummary struct {
 	DownloadSteadyMbps *float64   `json:"downloadSteadyMbps,omitempty"`
 	UploadSteadyMbps   *float64   `json:"uploadSteadyMbps,omitempty"`
 	LatencyMedianMs    *int       `json:"latencyMedianMs,omitempty"`
+	WifiRating         *string    `json:"wifiRating,omitempty"`  // null on Ethernet or older clients
+	WifiRssiDbm        *int       `json:"wifiRssiDbm,omitempty"` // negative integer; -50 stronger than -80
 	PublicIPHash       *string    `json:"publicIpHash,omitempty"` // never the raw IP — already redacted
 	EnqueuedAt         *time.Time `json:"enqueuedAt,omitempty"`   // contract v1.1.0+; null for older clients
 	SubmittedAt        *time.Time `json:"submittedAt,omitempty"`
@@ -99,6 +101,8 @@ func toSummary(s store.ListSummary) adminCertSummary {
 		DownloadSteadyMbps: s.DownloadSteadyMbps,
 		UploadSteadyMbps:   s.UploadSteadyMbps,
 		LatencyMedianMs:    s.LatencyMedianMs,
+		WifiRating:         s.WifiRating,
+		WifiRssiDbm:        s.WifiRssiDbm,
 		PublicIPHash:       s.PublicIP,
 		EnqueuedAt:         s.EnqueuedAt,
 		SubmittedAt:        s.SubmittedAt,
@@ -130,6 +134,8 @@ func (h *AdminHandler) ListCertifications(w http.ResponseWriter, r *http.Request
 		ConfigVersion: q.Get("configVersion"),
 		HSN:           q.Get("hsn"),
 		QueuedOnly:    q.Get("queuedOnly") == "true",
+		SortBy:        q.Get("sort"),
+		SortDir:       q.Get("dir"),
 		Limit:         atoiOr(q.Get("limit"), 50),
 		Offset:        atoiOr(q.Get("offset"), 0),
 	}
